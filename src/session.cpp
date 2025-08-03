@@ -2,10 +2,9 @@
 /*
  * Модуль session.cpp
  *
- * На старте конфигурирует lt::session (alert_mask, DHT-узлы),
- * затем в отдельном потоке каждую секунду ждёт алерты,
- * собирает их через pop_alerts и передаёт каждым зарегистрированным
- * Alert_Listener::handle_alert().
+ * На старте конфигурирует lt::session (alert_mask, DHT-узлы и т.п.),
+ * затем в отдельном потоке ждёт алерты через pop_alerts()
+ * и передаёт их всем зарегистрированным Alert_Listener.
  */
 
 #include "session.h"
@@ -21,7 +20,7 @@
      | lt::alert::piece_progress_notification \
      | lt::alert::file_progress_notification  \
      | lt::alert::status_notification       \
-     | lt::alert::metadata_received_notification /* catch metadata_received_alert */ \
+     | lt::alert::metadata_notification     \
      | lt::alert::error_notification)
 
 #define LIBTORRENT_DHT_NODES \
@@ -29,14 +28,14 @@
      "router.utorrent.com:6881,"              \
      "dht.transmissionbt.com:6881")
 
-Session::Session(std::mutex& mtx)
-    : m_lock(mtx)
+Session::Session(std::mutex& global_mtx)
+    : m_lock(global_mtx)
 {
     lt::settings_pack sp = lt::default_settings();
     sp.set_int(sp.alert_mask, LIBTORRENT_ADD_TORRENT_ALERTS);
     sp.set_str(sp.dht_bootstrap_nodes, LIBTORRENT_DHT_NODES);
 
-    // агрессивные настройки
+    // агрессивные настройки для скорого старта
     sp.set_bool(sp.strict_end_game_mode, false);
     sp.set_bool(sp.announce_to_all_trackers, true);
     sp.set_bool(sp.announce_to_all_tiers, true);
@@ -51,7 +50,7 @@ Session::Session(std::mutex& mtx)
 
     m_session = std::make_unique<lt::session>(sp);
 
-    // Запуск цикла алертов
+    // Запуск цикла обработки алертов
     m_session_thread = std::thread(&Session::session_thread, this);
 }
 
