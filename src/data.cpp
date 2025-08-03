@@ -1,14 +1,14 @@
-// src/data.cpp
 /*
- * Модуль data.cpp
+ * src/data.cpp
  *
- * Реализует stream_extractor для VLC-плагина vlc-bittorrent:
- *  - Чтение данных из торрента через Download.
- *  - Реализация seek/control запросов VLC.
- *  - Два слушателя алертов libtorrent:
- *      • VLCMetadataUpdater — ловит metadata_received_alert и пишет в статус «Meta OK»;
- *      • VLCStatusUpdater   — ловит state_update_alert и пишет скорость, peers, прогресс.
- *  - Регистрация этих слушателей на этапе DataOpen и удаление в DataClose.
+ * Этот модуль реализует логику потока данных (stream_extractor) для VLC.
+ *
+ * Основные задачи:
+ * - Реализация функций `DataRead`, `DataSeek`, `DataControl` для взаимодействия с ядром VLC.
+ * - **Реализация слушателей алертов `VLCStatusUpdater` и `VLCMetadataUpdater` для обновления
+ *   статуса в интерфейсе VLC.**
+ * - `VLCStatusUpdater` форматирует строку со статистикой (скорость, пиры, DHT) и отображает её.
+ * - Управление жизненным циклом объекта `Download` и регистрация/отмена регистрации слушателей.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -18,6 +18,7 @@
 #include <memory>
 #include <stdexcept>
 #include <sstream>
+#include <atomic> // для std::atomic
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
@@ -25,7 +26,7 @@
 #include <vlc_variables.h>
 
 #include <libtorrent/alert.hpp>
-#include <libtorrent/alert_types.hpp>  // metadata_received_alert, state_update_alert
+#include <libtorrent/alert_types.hpp>
 
 #include "data.h"
 #include "download.h"
@@ -33,6 +34,11 @@
 #include "vlc.h"
 
 #define MIN_CACHING_TIME 10000
+
+
+// Глобальная переменная для хранения количества DHT узлов
+static std::atomic<int> g_dht_nodes{0};
+
 
 // Слушатель для metadata_received_alert
 class VLCMetadataUpdater : public Alert_Listener {
@@ -43,8 +49,14 @@ public:
 
     void handle_alert(lt::alert* a) override {
         if (auto* mr = lt::alert_cast<lt::metadata_received_alert>(a)) {
-            var_SetString(m_input, "title", "Meta OK, starting...");
+            var_SetString(m_input, "title", "Metadata OK, starting download...");
         }
+        
+        // Также ловим алерт о статистике DHT
+        else if (auto* dht = lt::alert_cast<lt::dht_stats_alert>(a)) {
+            g_dht_nodes = dht->active_nodes;
+        }
+        
     }
 
 private:
@@ -60,14 +72,25 @@ public:
 
     void handle_alert(lt::alert* a) override {
         if (auto* su = lt::alert_cast<lt::state_update_alert>(a)) {
-            for (auto& st : su->status) {
-                std::ostringstream oss;
-                oss << "BT: D=" << (st.download_rate / 1000) << "kB/s"
-                    << " U=" << (st.upload_rate / 1000)   << "kB/s"
-                    << " Peers=" << st.num_peers
-                    << " [" << int(st.progress * 100)   << "%]";
-                var_SetString(m_input, "title", oss.str().c_str());
-            }
+            if (su->status.empty()) return;
+            
+            // Обычно в списке только один торрент, который мы проигрываем.
+            // Берем статистику по первому.
+            const lt::torrent_status& st = su->status[0];
+
+            
+            // Формируем более подробную и читаемую строку статуса
+            std::ostringstream oss;
+            oss << "[ "
+                << "D: " << (st.download_payload_rate / 1000) << " kB/s | "
+                << "U: " << (st.upload_payload_rate / 1000)   << " kB/s | "
+                << "Peers: " << st.num_peers << " (" << st.num_seeds << ") | "
+                << "DHT: " << g_dht_nodes.load() << " | "
+                << "Progress: " << static_cast<int>(st.progress * 100) << "%"
+                << " ]";
+            
+            
+            var_SetString(m_input, "title", oss.str().c_str());
         }
     }
 
@@ -166,13 +189,11 @@ DataOpen(vlc_object_t* p_obj)
     auto* p_extractor = reinterpret_cast<stream_extractor_t*>(p_obj);
     msg_Info(p_extractor, "Opening %s", p_extractor->identifier);
 
-    // 1) Читаем .torrent или magnet URL
     auto md = std::make_unique<char[]>(0x100000);
     ssize_t mdsz = vlc_stream_Read(p_extractor->source, md.get(), 0x100000);
     if (mdsz < 0)
         return VLC_EGENERIC;
 
-    // 2) Подготавливаем data_sys
     auto* s = new data_sys();
     try {
         s->p_download = Download::get_download(
@@ -189,17 +210,14 @@ DataOpen(vlc_object_t* p_obj)
         return VLC_EGENERIC;
     }
 
-    // 3) VLC callbacks
     p_extractor->p_sys      = s;
     p_extractor->pf_read    = DataRead;
     p_extractor->pf_seek    = DataSeek;
     p_extractor->pf_control = DataControl;
 
-    // 4) Слушатель метаданных
     s->p_meta_listener = new VLCMetadataUpdater(p_obj);
     Session::get()->register_alert_listener(s->p_meta_listener);
 
-    // 5) Слушатель статистики
     s->p_stat_listener = new VLCStatusUpdater(p_obj);
     Session::get()->register_alert_listener(s->p_stat_listener);
 
