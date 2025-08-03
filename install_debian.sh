@@ -5,7 +5,6 @@ say(){ printf "\033[1;34m>>> %s\033[0m\n" "$*"; }
 err(){ printf "\033[1;31m!!! ОШИБКА: %s\033[0m\n" "$*" >&2; exit 1; }
 
 # ————— Определяем реального пользователя —————
-# Если скрипт запущен через sudo, то SUDO_USER — это тот, чья учетная запись вызвала sudo.
 if [ -n "${SUDO_USER-}" ]; then
   ORIG_USER="$SUDO_USER"
   ORIG_HOME=$(getent passwd "$ORIG_USER" | cut -d: -f6)
@@ -16,7 +15,7 @@ fi
 
 say "Устанавливаем плагин от имени пользователя: $ORIG_USER ($ORIG_HOME)"
 
-# Проверяем sudo (нужен для apt и для classic-установки)
+# Проверяем sudo (нужен для apt и копирования в системные каталоги)
 if ! command -v sudo &>/dev/null; then
   err "Требуется sudo для установки зависимостей и копирования плагина."
 fi
@@ -52,22 +51,25 @@ VLC_BIN="$(command -v vlc)"
 # ————— Snap vs Classic —————
 if [[ "$VLC_BIN" == /snap/* ]]; then
   say "Обнаружен snap-VLC ($VLC_BIN)"
-  DEST="$ORIG_HOME/.local/lib/vlc/plugins/access"
+  # Кладём в ~/.local/lib/vlc/plugins (уровнем выше — без /access)
+  DEST="$ORIG_HOME/.local/lib/vlc/plugins"
 
   say "Создаём папку для плагинов: $DEST"
   sudo mkdir -p "$DEST"
 
-  say "Копируем плагин в $DEST (под $ORIG_USER)"
+  say "Устанавливаем права на каталог $DEST → $ORIG_USER"
+  sudo chown -R "$ORIG_USER":"$ORIG_USER" "$DEST"
+
+  say "Копируем плагин в $DEST"
   sudo install -o "$ORIG_USER" -g "$ORIG_USER" -m644 "$PLUGIN" "$DEST/"
 
   # Обновляем .profile у оригинального пользователя
   PROFILE="$ORIG_HOME/.profile"
-  if ! grep -q "VLC_PLUGIN_PATH=.*$DEST" "$PROFILE"; then
+  if ! sudo grep -q "VLC_PLUGIN_PATH=.*\$HOME/.local/lib/vlc/plugins" "$PROFILE"; then
     say "Добавляем VLC_PLUGIN_PATH в $PROFILE"
     printf "\n# added by vlc-bittorrent install_debian.sh\nexport VLC_PLUGIN_PATH=\"$DEST:\$VLC_PLUGIN_PATH\"\n" \
       | sudo tee -a "$PROFILE" >/dev/null
-    # Восстанавливаем права
-    sudo chown "$ORIG_USER:$ORIG_USER" "$PROFILE"
+    sudo chown "$ORIG_USER":"$ORIG_USER" "$PROFILE"
     say "Для применения: su - $ORIG_USER или source $PROFILE"
   else
     say "VLC_PLUGIN_PATH уже есть в $PROFILE"
