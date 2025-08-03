@@ -224,9 +224,18 @@ Download::Download(std::mutex& mtx, lt::add_torrent_params& atp, bool k)
     if (!m_th.is_valid())
         throw std::runtime_error("Failed to add torrent");
     
+    // --- НАЧАЛО ИСПРАВЛЕНИЯ ---
     if (m_th.is_valid() && !atp.trackers.empty()) {
-        m_th.replace_trackers(atp.trackers);
+        // Создаем вектор правильного типа: std::vector<lt::announce_entry>
+        std::vector<lt::announce_entry> announce_entries;
+        // Заполняем его, конвертируя каждую строку в announce_entry
+        for (const auto& url : atp.trackers) {
+            announce_entries.emplace_back(url);
+        }
+        // Передаем в функцию вектор правильного типа
+        m_th.replace_trackers(announce_entries);
     }
+    // --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 }
@@ -342,7 +351,6 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
 {
     D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
 
-    // Резервный список публичных трекеров
     static const std::vector<std::string> public_trackers = {
         "udp://tracker.openbittorrent.com:6969/announce",
         "udp://tracker.opentrackr.org:1337/announce",
@@ -375,7 +383,7 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
 #endif
         if (ec2) throw std::runtime_error("Failed to parse metadata from file or magnet");
     } else {
-        // Это magnet-ссылка. Если в ней нет трекеров, добавляем наши.
+        // It's a magnet-link. If no trackers are present, add the public ones.
         if (atp.trackers.empty()) {
             atp.trackers = public_trackers;
         }
