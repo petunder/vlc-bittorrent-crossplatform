@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <sstream>
 #include <atomic> // для std::atomic
+#include <numeric> // для std::accumulate
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
@@ -35,8 +36,6 @@
 
 #define MIN_CACHING_TIME 10000
 
-
-// Глобальная переменная для хранения количества DHT узлов
 static std::atomic<int> g_dht_nodes{0};
 
 
@@ -51,12 +50,16 @@ public:
         if (auto* mr = lt::alert_cast<lt::metadata_received_alert>(a)) {
             var_SetString(m_input, "title", "Metadata OK, starting download...");
         }
-        
-        // Также ловим алерт о статистике DHT
+        // --- НАЧАЛО ИСПРАВЛЕНИЯ ---
+        // Ловим алерт о статистике DHT и суммируем узлы из таблицы маршрутизации
         else if (auto* dht = lt::alert_cast<lt::dht_stats_alert>(a)) {
-            g_dht_nodes = dht->active_nodes;
+            int total_nodes = 0;
+            for(const auto& bucket : dht->routing_table) {
+                total_nodes += bucket.num_nodes;
+            }
+            g_dht_nodes = total_nodes;
         }
-        
+        // --- КОНЕЦ ИСПРАВЛЕНИЯ ---
     }
 
 private:
@@ -74,12 +77,8 @@ public:
         if (auto* su = lt::alert_cast<lt::state_update_alert>(a)) {
             if (su->status.empty()) return;
             
-            // Обычно в списке только один торрент, который мы проигрываем.
-            // Берем статистику по первому.
             const lt::torrent_status& st = su->status[0];
 
-            
-            // Формируем более подробную и читаемую строку статуса
             std::ostringstream oss;
             oss << "[ "
                 << "D: " << (st.download_payload_rate / 1000) << " kB/s | "
@@ -88,7 +87,6 @@ public:
                 << "DHT: " << g_dht_nodes.load() << " | "
                 << "Progress: " << static_cast<int>(st.progress * 100) << "%"
                 << " ]";
-            
             
             var_SetString(m_input, "title", oss.str().c_str());
         }
