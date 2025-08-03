@@ -49,7 +49,7 @@
 #include <libtorrent/alert.hpp>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/create_torrent.hpp>
-#include <libtorrent/hex.hpp> // <--- ИСПРАВЛЕНИЕ: Добавлен необходимый заголовок
+#include <libtorrent/hex.hpp>
 #include <libtorrent/magnet_uri.hpp>
 #include <libtorrent/peer_request.hpp>
 #include <libtorrent/session.hpp>
@@ -357,7 +357,7 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
     } else {
         // It's a magnet link. Try to find the .torrent file in cache.
         std::string path = cache_path + DIR_SEP
-            + lt::to_hex(atp.info_hashes.v1.to_string()) + ".torrent";
+            + atp.info_hashes.v1.to_string() + ".torrent";
 
         lt::error_code ec_cache;
 #if LIBTORRENT_VERSION_NUM < 10200
@@ -462,8 +462,10 @@ std::string Download::get_infohash()
 {
     D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
-
-    return lt::to_hex(m_th.torrent_file()->info_hash().to_string());
+    
+    // В новых версиях libtorrent .to_string() сразу возвращает hex.
+    // Убираем устаревший вызов lt::to_hex().
+    return m_th.torrent_file()->info_hash().to_string();
 }
 
 std::shared_ptr<std::vector<char>> Download::get_metadata(
