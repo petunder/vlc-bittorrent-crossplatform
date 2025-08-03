@@ -140,7 +140,7 @@ DataControl(stream_extractor_t* p_extractor, int i_query, va_list args)
 
         case STREAM_GET_PTS_DELAY: {
             int64_t nc = var_InheritInteger(p_extractor, "network-caching");
-            int64_t delay = (nc > MIN_CACHING_TIME ? nc : MIN_CACHING_TIME)*1000LL;
+            int64_t delay = (nc > MIN_CACHING_TIME ? nc : MIN_CACHING_TIME) * 1000LL;
             *va_arg(args, int64_t*) = delay;
             break;
         }
