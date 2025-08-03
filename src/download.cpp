@@ -22,9 +22,9 @@ download.cpp
 Copyright 2025 petunder
 Изменения (август 2025):
   - `read_piece_alert::ec` → `read_piece_alert::error`
-  - `torrent_removed_alert::info_hash` → `torrent_removed_alert::info_hashes.v1()`
+  - `torrent_removed_alert::info_hash` → `torrent_removed_alert::info_hashes.v1`
   - Deprecated `add_torrent_params` flags replaced with `lt::torrent_flags`
-  - Use `info_hashes.v1()` instead of `info_hash`
+  - Use `info_hashes.v1` instead of `info_hash`
   - `has_metadata()` → `status().has_metadata`
 */
 
@@ -215,7 +215,7 @@ public:
             // if (x->info_hash != m_ih) return;
 
             // NEW: сравниваем v1-хеш вместо deprecated info_hash
-            if (x->info_hashes.v1() != m_ih) return;
+            if (x->info_hashes.v1 != m_ih) return;
             set_value();
         }
     }
@@ -376,9 +376,9 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
         // std::string path = cache_path + DIR_SEP
         //     + lt::to_hex(atp.info_hash.to_string()) + ".torrent";
 
-        // NEW: используем info_hashes.v1()
+        // NEW: используем info_hashes.v1
         std::string path = cache_path + DIR_SEP
-            + atp.info_hashes.v1().to_string() + ".torrent";
+            + atp.info_hashes.v1.to_string() + ".torrent";
 
 #if LIBTORRENT_VERSION_NUM < 10200
         atp.ti = boost::make_shared<lt::torrent_info>(path, boost::ref(ec));
@@ -415,7 +415,7 @@ std::shared_ptr<Download> Download::get_download(
 
     // NEW:
     lt::sha1_hash ih = atp.ti ? atp.ti->info_hash()
-                              : atp.info_hashes.v1();
+                              : atp.info_hashes.v1;
 
     static std::mutex mtx;
     std::unique_lock<std::mutex> lock(mtx);
