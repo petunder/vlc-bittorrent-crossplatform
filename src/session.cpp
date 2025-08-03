@@ -1,10 +1,15 @@
-// src/session.cpp
 /*
- * Модуль session.cpp
+ * src/session.cpp
  *
- * На старте конфигурирует lt::session (alert_mask, DHT-узлы и т.п.),
- * затем в отдельном потоке ждёт алерты через pop_alerts()
- * и передаёт их всем зарегистрированным Alert_Listener.
+ * Этот модуль управляет глобальной сессией libtorrent. Он является синглтоном,
+ * который инициализируется при первом обращении.
+ *
+ * Основные задачи:
+ * - Конфигурация и запуск сессии libtorrent (настройки DHT, маска алертов).
+ * - Запуск отдельного потока для обработки алертов от libtorrent.
+ * - **Периодический запрос обновлений статуса (`post_torrent_updates`)**, чтобы получать
+ *   информацию о скоростях, пирах и т.д.
+ * - Предоставление интерфейса для регистрации/отмены регистрации слушателей алертов.
  */
 
 #include "session.h"
@@ -14,6 +19,8 @@
 #include <chrono>
 #include <vector>
 
+// --- НАЧАЛО ИЗМЕНЕНИЯ ---
+// Добавляем dht_stats_notification, чтобы получать информацию о состоянии DHT
 #define LIBTORRENT_ADD_TORRENT_ALERTS \
     (lt::alert::storage_notification          \
      | lt::alert::block_progress_notification \
@@ -21,7 +28,9 @@
      | lt::alert::file_progress_notification  \
      | lt::alert::status_notification         \
      | lt::alert::tracker_notification        \
+     | lt::alert::dht_notification            \
      | lt::alert::error_notification)
+// --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 #define LIBTORRENT_DHT_NODES \
     ("router.bittorrent.com:6881,"    \
@@ -35,7 +44,6 @@ Session::Session(std::mutex& global_mtx)
     sp.set_int(sp.alert_mask, LIBTORRENT_ADD_TORRENT_ALERTS);
     sp.set_str(sp.dht_bootstrap_nodes, LIBTORRENT_DHT_NODES);
 
-    // Агрессивные настройки для ускорения старта
     sp.set_bool(sp.strict_end_game_mode, false);
     sp.set_bool(sp.announce_to_all_trackers, true);
     sp.set_bool(sp.announce_to_all_tiers, true);
@@ -50,7 +58,6 @@ Session::Session(std::mutex& global_mtx)
 
     m_session = std::make_unique<lt::session>(sp);
 
-    // Запуск цикла обработки алертов
     m_session_thread = std::thread(&Session::session_thread, this);
 }
 
@@ -90,6 +97,12 @@ void Session::session_thread()
 {
     while (!m_quit) {
         m_session->wait_for_alert(std::chrono::seconds(1));
+
+        // Явно запрашиваем у libtorrent прислать нам алерты
+        // о состоянии торрентов и DHT.
+        m_session->post_torrent_updates();
+        m_session->post_dht_stats();
+
         std::vector<lt::alert*> alerts;
         m_session->pop_alerts(&alerts);
 
