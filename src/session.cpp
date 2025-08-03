@@ -15,16 +15,37 @@ GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
 along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
+
+session.cpp
+Copyright 2025 petunder
+Изменения (август 2025):
+  - Заменил deprecated lt::alert::progress_notification
+    на новые категории: block_progress-, piece_progress- и file_progress_notification.
+  - Всё остальное без изменений
 */
 
 #include "session.h"
+#include <libtorrent/alert.hpp>
+#include <libtorrent/session.hpp>
 
 #define D(x)
 #define DD(x)
 
+// OLD:
+// #define LIBTORRENT_ADD_TORRENT_ALERTS \
+//     (lt::alert::storage_notification | lt::alert::progress_notification \
+//         | lt::alert::status_notification | lt::alert::error_notification)
+
+// NEW: вместо deprecated progress_notification используем три новых категории
+// – block_progress_notification, piece_progress_notification и file_progress_notification
+// (alert::progress_notification deprecated в libtorrent 1.2+) :contentReference[oaicite:0]{index=0}
 #define LIBTORRENT_ADD_TORRENT_ALERTS \
-    (lt::alert::storage_notification | lt::alert::progress_notification \
-        | lt::alert::status_notification | lt::alert::error_notification)
+    (lt::alert::storage_notification \
+     | lt::alert::block_progress_notification \
+     | lt::alert::piece_progress_notification \
+     | lt::alert::file_progress_notification \
+     | lt::alert::status_notification \
+     | lt::alert::error_notification)
 
 #define LIBTORRENT_DHT_NODES \
     ("router.bittorrent.com:6881," \
