@@ -25,8 +25,9 @@
 #include <vlc_plugin.h>
 #include <vlc_stream.h>
 #include <vlc_variables.h>
-#include <vlc_input.h> // Необходимо для доступа к input_thread_t и input_item_t
+#include <vlc_input.h>  // Необходимо для доступа к input_thread_t и input_item_t
 #include <vlc_meta.h>   // Необходимо для vlc_meta_Title и функций работы с метаданными
+#include <vlc_events.h> // Необходимо для системы событий
 
 #include <libtorrent/alert.hpp>
 #include <libtorrent/alert_types.hpp>
@@ -49,17 +50,25 @@ public:
     ~VLCMetadataUpdater() override = default;
 
     void handle_alert(lt::alert* a) override {
-        // --- НАЧАЛО ИЗМЕНЕНИЯ ---
         input_item_t* p_item = nullptr;
-        if (m_input && m_input->p_owner) {
-            input_thread_t* p_input_thread = (input_thread_t*)m_input->p_owner;
-            p_item = input_GetItem(p_input_thread);
+        // --- ИСПРАВЛЕНИЕ 1: Используем vlc_object_parent для получения родителя ---
+        if (m_input) {
+            input_thread_t* p_input_thread = (input_thread_t*)vlc_object_parent(m_input);
+            if(p_input_thread)
+                p_item = input_GetItem(p_input_thread);
         }
         
         if (auto* mr = lt::alert_cast<lt::metadata_received_alert>(a)) {
             if (p_item) {
                 input_item_SetMeta(p_item, vlc_meta_Title, "Metadata OK, starting download...");
-                input_item_SendEventMeta(p_item);
+                // --- ИСПРАВЛЕНИЕ 2: Используем систему событий для уведомления ---
+                vlc_event_manager_t *p_em = input_item_GetEventManager(p_item);
+                if (p_em) {
+                    vlc_event_t event;
+                    vlc_event_init(&event, vlc_EvtMetaChanged);
+                    event.u.meta_changed.meta_type = vlc_meta_Title;
+                    vlc_event_send(p_em, &event);
+                }
             }
         }
         else if (auto* dht = lt::alert_cast<lt::dht_stats_alert>(a)) {
@@ -69,7 +78,6 @@ public:
             }
             g_dht_nodes = total_nodes;
         }
-        // --- КОНЕЦ ИЗМЕНЕНИЯ ---
     }
 
 private:
@@ -98,16 +106,24 @@ public:
                 << "Progress: " << static_cast<int>(st.progress * 100) << "%"
                 << " ]";
             
-            // --- НАЧАЛО ИЗМЕНЕНИЯ ---
-            if (m_input && m_input->p_owner) {
-                input_thread_t* p_input_thread = (input_thread_t*)m_input->p_owner;
-                input_item_t* p_item = input_GetItem(p_input_thread);
-                if (p_item) {
-                    input_item_SetMeta(p_item, vlc_meta_Title, oss.str().c_str());
-                    input_item_SendEventMeta(p_item);
+            // --- ИСПРАВЛЕНИЕ 1: Используем vlc_object_parent для получения родителя ---
+            if (m_input) {
+                input_thread_t* p_input_thread = (input_thread_t*)vlc_object_parent(m_input);
+                if (p_input_thread) {
+                    input_item_t* p_item = input_GetItem(p_input_thread);
+                    if (p_item) {
+                        input_item_SetMeta(p_item, vlc_meta_Title, oss.str().c_str());
+                        // --- ИСПРАВЛЕНИЕ 2: Используем систему событий для уведомления ---
+                        vlc_event_manager_t *p_em = input_item_GetEventManager(p_item);
+                        if (p_em) {
+                            vlc_event_t event;
+                            vlc_event_init(&event, vlc_EvtMetaChanged);
+                            event.u.meta_changed.meta_type = vlc_meta_Title;
+                            vlc_event_send(p_em, &event);
+                        }
+                    }
                 }
             }
-            // --- КОНЕЦ ИЗМЕНЕНИЯ ---
         }
     }
 
