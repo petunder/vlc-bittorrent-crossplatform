@@ -61,20 +61,32 @@ Session::Session(std::mutex& mtx)
 
     m_session = std::make_unique<lt::session>(sp);
 
-    // Запуск потока
-    m_session_thread = std::thread([&] {
+    // Запуск потока: каждую секунду запрашиваем свежие статусы
+    m_session_thread = std::thread([this] {
         while (!m_session_thread_quit) {
-            m_session->wait_for_alert(std::chrono::seconds(1));
-            std::vector<lt::alert*> alerts;
-            m_session->pop_alerts(&alerts);
+            // 1) Получаем вектор torrent_status для всех торрентов
+            std::vector<lt::torrent_status> stats =
+                m_session->get_torrent_status(
+                    [](lt::torrent_status const&) { return true; },  // все торренты
+                    lt::status_flags::download_payload_rate
+                  | lt::status_flags::upload_payload_rate
+                  | lt::status_flags::num_peers
+                  | lt::status_flags::progress
+                );
 
-            std::unique_lock<std::mutex> lock(m_listeners_mtx);
-            for (auto* a : alerts) {
-                for (auto* h : m_listeners) {
-                    try { h->handle_alert(a); }
-                    catch (...) { /* silently */ }
+            // 2) Рассылаем каждому слушателю
+            {
+                std::lock_guard<std::mutex> lg(m_listeners_mtx);
+                for (auto& st : stats) {
+                    for (auto* listener : m_listeners) {
+                        // Приводим к нашему VLCStatusUpdater и шлём on_status
+                        static_cast<VLCStatusUpdater*>(listener)->on_status(st);
+                    }
                 }
             }
+
+            // 3) Ждём перед следующим циклом
+            std::this_thread::sleep_for(std::chrono::seconds(1));
         }
     });
 }
