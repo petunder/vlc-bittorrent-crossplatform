@@ -26,7 +26,7 @@
 
 // Интерфейс для получения алертов из libtorrent
 struct Alert_Listener {
-    virtual ~Alert_Listener() { }
+    virtual ~Alert_Listener() = default;
     virtual void handle_alert(lt::alert* a) = 0;
 };
 
@@ -43,9 +43,11 @@ public:
     lt::torrent_handle add_torrent(lt::add_torrent_params& atp);
     void remove_torrent(lt::torrent_handle& th, bool keep);
 
+    // Деструктор — публичный, чтобы shared_ptr мог корректно уничтожить объект
+    ~Session();
+
 private:
     Session(std::mutex& global_mtx);
-    ~Session();
 
     // Цикл polling’а алертов
     void session_thread();
