@@ -13,6 +13,7 @@
  * 2.  **Обработка метаданных:**
  *     - Получение метаданных как из `.torrent` файлов, так и по magnet-ссылкам.
  *     - Реализация механизма кеширования метаданных для magnet-ссылок.
+ *     - **Использование резервного списка публичных трекеров, если в magnet-ссылке они отсутствуют.**
  *
  * 3.  **Чтение данных:**
  *     - Реализация функции `read()`, которая позволяет VLC-плагину запрашивать фрагменты (piece) файла.
@@ -38,6 +39,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <iterator> // для std::ostream_iterator
+#include <vector>   // для std::vector
 
 #include "download.h"
 #include "session.h"
@@ -221,6 +223,10 @@ Download::Download(std::mutex& mtx, lt::add_torrent_params& atp, bool k)
     m_th = m_session->add_torrent(atp);
     if (!m_th.is_valid())
         throw std::runtime_error("Failed to add torrent");
+    
+    if (m_th.is_valid() && !atp.trackers.empty()) {
+        m_th.replace_trackers(atp.trackers);
+    }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 }
@@ -336,6 +342,20 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
 {
     D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
 
+    // Резервный список публичных трекеров
+    static const std::vector<std::string> public_trackers = {
+        "udp://tracker.openbittorrent.com:6969/announce",
+        "udp://tracker.opentrackr.org:1337/announce",
+        "udp://open.demonii.com:1337/announce",
+        "udp://tracker.coppersurfer.tk:6969/announce",
+        "udp://tracker.leechers-paradise.org:6969/announce",
+        "udp://exodus.desync.com:6969/announce",
+        "udp://tracker.torrent.eu.org:451/announce",
+        "udp://tracker.moeking.me:6969/announce",
+        "udp://valakas.rollo.dnsabr.com:2710/announce",
+        "udp://p4p.arenabg.com:1337/announce"
+    };
+
     lt::add_torrent_params atp;
     atp.save_path = save_path;
 
@@ -355,7 +375,12 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
 #endif
         if (ec2) throw std::runtime_error("Failed to parse metadata from file or magnet");
     } else {
-        // It's a magnet link. Try to find the .torrent file in cache.
+        // Это magnet-ссылка. Если в ней нет трекеров, добавляем наши.
+        if (atp.trackers.empty()) {
+            atp.trackers = public_trackers;
+        }
+
+        // Try to find the .torrent file in cache.
         std::string path = cache_path + DIR_SEP
             + atp.info_hashes.v1.to_string() + ".torrent";
 
@@ -367,8 +392,7 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
 #endif
         if (ec_cache) {
             // Not in cache, we need to download it.
-            // atp already contains trackers and info_hash from parse_magnet_uri.
-            atp.ti = nullptr; // Make sure ti is null so download_metadata is triggered
+            atp.ti = nullptr;
             auto metadata = Download::get_download(atp, true)->get_metadata(cb);
 
             // Save the downloaded metadata to cache for next time
@@ -376,12 +400,10 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
             os.write(metadata->data(), metadata->size());
             os.close();
 
-            return metadata; // Return the freshly downloaded metadata
+            return metadata;
         }
     }
 
-    // This part is now reached for .torrent files and for magnet links whose metadata was found in cache.
-    // We add trackers from the magnet link to the torrent_info object loaded from cache.
     if (atp.ti && !atp.trackers.empty()) {
         for (auto const& tracker : atp.trackers) {
             atp.ti->add_tracker(tracker);
@@ -463,8 +485,6 @@ std::string Download::get_infohash()
     D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
     
-    // В новых версиях libtorrent .to_string() сразу возвращает hex.
-    // Убираем устаревший вызов lt::to_hex().
     return m_th.torrent_file()->info_hash().to_string();
 }
 
