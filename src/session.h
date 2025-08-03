@@ -3,9 +3,9 @@
  * Модуль session.h
  *
  * Обёртка над libtorrent::session:
- *  - Запускает фоновый поток polling’а алертов.
- *  - Хранит список Alert_Listener* для всех подписчиков.
- *  - Предоставляет API для добавления/удаления торрентов и слушателей алертов.
+ *  - Хранит единственную сессию в синглтоне.
+ *  - Позволяет регистрировать Alert_Listener для любых алертов.
+ *  - Обеспечивает методы add/remove torrent.
  */
 
 #ifndef VLC_BITTORRENT_LIBTORRENT_H
@@ -24,40 +24,38 @@
 #include <libtorrent/session.hpp>
 #pragma GCC diagnostic pop
 
-// Интерфейс для получения любых алертов libtorrent
+// Интерфейс для получения алертов из libtorrent
 struct Alert_Listener {
     virtual ~Alert_Listener() { }
-    virtual void handle_alert(lt::alert* alert) = 0;
+    virtual void handle_alert(lt::alert* a) = 0;
 };
 
 class Session {
 public:
-    // Конструктор блокирует переданный мьютекс
-    Session(std::mutex& mtx);
-    // Останавливает поток и очищает ресурсы
-    ~Session();
+    // Получить синглтон (инициализирует при первом вызове)
+    static std::shared_ptr<Session> get();
 
-    // Подписаться/отписаться на все алерты
+    // Alert-API
     void register_alert_listener(Alert_Listener* al);
     void unregister_alert_listener(Alert_Listener* al);
 
-    // Добавить/удалить торрент
+    // Torrent-API
     lt::torrent_handle add_torrent(lt::add_torrent_params& atp);
-    void remove_torrent(lt::torrent_handle& th, bool keep_files);
-
-    // Singleton
-    static std::shared_ptr<Session> get();
+    void remove_torrent(lt::torrent_handle& th, bool keep);
 
 private:
-    // Фоновой поток poll’ит алерты
+    Session(std::mutex& global_mtx);
+    ~Session();
+
+    // Цикл polling’а алертов
     void session_thread();
 
-    std::unique_lock<std::mutex>               m_lock;
-    std::unique_ptr<lt::session>               m_session;
-    std::thread                                m_session_thread;
-    std::atomic<bool>                          m_session_thread_quit;
-    std::forward_list<Alert_Listener*>         m_listeners;
-    std::mutex                                 m_listeners_mtx;
+    std::unique_lock<std::mutex>       m_lock;
+    std::unique_ptr<lt::session>       m_session;
+    std::thread                        m_session_thread;
+    std::atomic<bool>                  m_quit{false};
+    std::forward_list<Alert_Listener*> m_listeners;
+    std::mutex                         m_listeners_mtx;
 };
 
 #endif // VLC_BITTORRENT_LIBTORRENT_H
