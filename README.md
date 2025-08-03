@@ -49,6 +49,7 @@ The root of this repository contains one-click installer scripts:
    * **Linux (Debian/Ubuntu)**
 
      ```bash
+     chmod +x install_debian.sh
      sudo ./install_debian.sh
      ```
    * **Windows (PowerShell, administrator)**
