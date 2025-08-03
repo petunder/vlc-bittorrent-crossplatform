@@ -36,17 +36,17 @@ PLUGIN="$(find src -maxdepth 1 -name 'libaccess_bittorrent_plugin.*.so' -o -name
 
 # Определяем способ установки VLC
 if ! command -v vlc &>/dev/null; then
-  err "Не удалось найти исполняемый файл VLC. Убедитесь, что VLC установлен."
+  err "Не удалось найти исполняемый файл vlc. Убедитесь, что VLC установлен."
 fi
 
 VLC_BIN="$(command -v vlc)"
-VLC_PATH="$(readlink -f "$VLC_BIN")"
 
-if [[ "$VLC_PATH" == /snap/* ]]; then
+# Теперь смотрим на сам путь к бинарнику, а не на readlink -f
+if [[ "$VLC_BIN" == /snap/* ]]; then
   ### Snap-установка VLC ###
-  say "Обнаружен VLC установленный через snap"
-  DEST="$HOME/.local/lib/vlc/plugins/access"
+  say "Обнаружен VLC установленный через snap ($VLC_BIN)"
 
+  DEST="$HOME/.local/lib/vlc/plugins/access"
   say "Создаём директорию плагинов для snap-VLC: $DEST"
   mkdir -p "$DEST"
 
@@ -56,17 +56,20 @@ if [[ "$VLC_PATH" == /snap/* ]]; then
   # Добавляем VLC_PLUGIN_PATH, если ещё не добавлен
   if ! grep -q "VLC_PLUGIN_PATH=.*$DEST" "$HOME/.profile"; then
     say "Добавляем VLC_PLUGIN_PATH в ~/.profile"
-    printf "\n# added by vlc-bittorrent install_debian.sh\nexport VLC_PLUGIN_PATH=\"$DEST:\$VLC_PLUGIN_PATH\"\n" >> "$HOME/.profile"
-    say "Для применения изменений выполните: source ~/.profile или повторно войдите в сессию"
+    printf "\n# added by vlc-bittorrent install_debian.sh\nexport VLC_PLUGIN_PATH=\"$DEST:\$VLC_PLUGIN_PATH\"\n" \
+      >> "$HOME/.profile"
+    say "Для применения изменений выполните: source ~/.profile или выйдите/войдите в систему"
   else
     say "VLC_PLUGIN_PATH уже добавлен в ~/.profile"
   fi
 
   say "Установка плагина завершена для snap-VLC."
   say "Запускайте VLC командой 'snap run vlc' — плагин будет подхвачен автоматически."
+
 else
   ### Классическая (deb/ppa) установка VLC ###
-  say "Обнаружен классический VLC"
+  say "Обнаружен классический VLC ($VLC_BIN)"
+
   if PKG=$(pkg-config --variable=pluginsdir vlc-plugin 2>/dev/null); then
     BASE="$PKG"
   else
