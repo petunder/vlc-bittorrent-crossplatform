@@ -4,9 +4,9 @@ set -euo pipefail
 say(){ printf "\033[1;34m>>> %s\033[0m\n" "$*"; }
 err(){ printf "\033[1;31m!!! ОШИБКА: %s\033[0m\n" "$*" >&2; exit 1; }
 
-# Проверяем sudo
+# Проверяем sudo (для установки зависимостей и копирования в системные каталоги)
 if ! command -v sudo &>/dev/null; then
-  err "Требуется sudo для установки зависимостей."
+  err "Требуется sudo для установки зависимостей и копирования плагина."
 fi
 
 say "Устанавливаем системные пакеты..."
@@ -30,25 +30,62 @@ cmake ..
 say "Сборка…"
 make -j"$(nproc)"
 
-# Копирование плагина
-say "Определяем каталог плагинов VLC..."
-if PKG=$(pkg-config --variable=pluginsdir vlc-plugin 2>/dev/null); then
-  DEST="$PKG"
-else
-  ARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo "x86_64-linux-gnu")
-  DEST="/usr/lib/${ARCH}/vlc/plugins"
-fi
-sudo mkdir -p "$DEST"
-
-PLUGIN=$(find src -maxdepth 1 -name "libaccess_bittorrent_plugin.*.so" -o -name "libaccess_bittorrent_plugin.so" | head -n1)
+# Находим скомпилированный плагин
+PLUGIN="$(find src -maxdepth 1 -name 'libaccess_bittorrent_plugin.*.so' -o -name 'libaccess_bittorrent_plugin.so' | head -n1)"
 [ -f "$PLUGIN" ] || err "Не найден файл плагина в сборке."
 
-say "Установка плагина в $DEST..."
-sudo install -m644 "$PLUGIN" "$DEST/"
-
-say "Обновляем кэш плагинов (если есть)…"
-if command -v vlc-cache-gen &>/dev/null; then
-  sudo vlc-cache-gen -f "$DEST" || true
+# Определяем способ установки VLC
+if ! command -v vlc &>/dev/null; then
+  err "Не удалось найти исполняемый файл VLC. Убедитесь, что VLC установлен."
 fi
 
-say "Готово! Перезапустите VLC."
+VLC_BIN="$(command -v vlc)"
+VLC_PATH="$(readlink -f "$VLC_BIN")"
+
+if [[ "$VLC_PATH" == /snap/* ]]; then
+  ### Snap-установка VLC ###
+  say "Обнаружен VLC установленный через snap"
+  DEST="$HOME/.local/lib/vlc/plugins/access"
+
+  say "Создаём директорию плагинов для snap-VLC: $DEST"
+  mkdir -p "$DEST"
+
+  say "Копируем плагин в $DEST"
+  install -m644 "$PLUGIN" "$DEST/"
+
+  # Добавляем VLC_PLUGIN_PATH, если ещё не добавлен
+  if ! grep -q "VLC_PLUGIN_PATH=.*$DEST" "$HOME/.profile"; then
+    say "Добавляем VLC_PLUGIN_PATH в ~/.profile"
+    printf "\n# added by vlc-bittorrent install_debian.sh\nexport VLC_PLUGIN_PATH=\"$DEST:\$VLC_PLUGIN_PATH\"\n" >> "$HOME/.profile"
+    say "Для применения изменений выполните: source ~/.profile или повторно войдите в сессию"
+  else
+    say "VLC_PLUGIN_PATH уже добавлен в ~/.profile"
+  fi
+
+  say "Установка плагина завершена для snap-VLC."
+  say "Запускайте VLC командой 'snap run vlc' — плагин будет подхвачен автоматически."
+else
+  ### Классическая (deb/ppa) установка VLC ###
+  say "Обнаружен классический VLC"
+  if PKG=$(pkg-config --variable=pluginsdir vlc-plugin 2>/dev/null); then
+    BASE="$PKG"
+  else
+    ARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo "x86_64-linux-gnu")
+    BASE="/usr/lib/${ARCH}/vlc/plugins"
+  fi
+  DEST="$BASE/access"
+
+  say "Создаём директорию плагинов: $DEST"
+  sudo mkdir -p "$DEST"
+
+  say "Копируем плагин в $DEST"
+  sudo install -m644 "$PLUGIN" "$DEST/"
+
+  say "Обновляем кэш плагинов (если доступно)…"
+  if command -v vlc-cache-gen &>/dev/null; then
+    sudo vlc-cache-gen -f "$BASE" || true
+  fi
+
+  say "Установка плагина завершена для классического VLC."
+  say "Перезапустите VLC для применения изменений."
+fi
