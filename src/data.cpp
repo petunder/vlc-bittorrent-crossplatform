@@ -8,6 +8,7 @@
  *  - Регистрация собственного слушателя алертов libtorrent
  *    (VLCStatusUpdater), который обновляет строку статуса VLC.
  */
+#include <libtorrent/alert_types.hpp>  // metadata_progress_alert, metadata_received_alert
 
 #ifdef HAVE_CONFIG_H
 # include "config.h"
@@ -30,6 +31,28 @@
 #include "vlc.h"
 
 #define MIN_CACHING_TIME 10000
+
+// МИНИМУМ: обработчик метадаты
+class VLCMetadataUpdater : public Alert_Listener {
+public:
+    explicit VLCMetadataUpdater(vlc_object_t* input)
+        : m_input(input) {}
+    ~VLCMetadataUpdater() override = default;
+
+    void handle_alert(lt::alert* a) override {
+        // прогресс получения метаданных (magnet)
+        if (auto* mp = lt::alert_cast<lt::metadata_progress_alert>(a)) {
+            int p = int(mp->progress * 100);
+            char buf[64];
+            snprintf(buf, sizeof(buf), "Meta: %d%%", p);
+            var_SetString(m_input, "title", buf);
+        }
+        // метаданные получены — можно переключиться на VLCStatusUpdater
+        else if (auto* mr = lt::alert_cast<lt::metadata_received_alert>(a)) {
+            var_SetString(m_input, "title", "Meta OK, starting...");
+        }
+    }
+};
 
 // Обёртка над Alert_Listener, которая на state_update_alert пишет в title
 class VLCStatusUpdater : public Alert_Listener {
@@ -60,7 +83,8 @@ struct data_sys {
     std::shared_ptr<Download> p_download;  // сам торрент
     int        i_file   = 0;               // текущий файл
     uint64_t   i_pos    = 0;               // позиция внутри файла
-    Alert_Listener* p_listener = nullptr;  // наш VLCStatusUpdater
+    Alert_Listener* p_meta_listener = nullptr;    // обновления метадаты
+    Alert_Listener* p_stat_listener = nullptr;    // обновления статистики
 };
 
 // DataRead — VLC просит следующий кусок данных
@@ -170,9 +194,13 @@ int DataOpen(vlc_object_t* p_obj)
     p_extractor->pf_seek    = DataSeek;
     p_extractor->pf_control = DataControl;
 
-    // 4) Подписываем нашего слушателя на алерты статуса
-    s->p_listener = new VLCStatusUpdater(p_obj);
-    Session::get()->register_alert_listener(s->p_listener);
+    // 4) Сначала слушаем прогресс метадаты (если magnet)
+    s->p_meta_listener = new VLCMetadataUpdater(p_obj);
+    Session::get()->register_alert_listener(s->p_meta_listener);
+
+     // 5) А затем, после получения метаданных, статистику загрузки
+    s->p_stat_listener = new VLCStatusUpdater(p_obj);
+    Session::get()->register_alert_listener(s->p_stat_listener);
 
     return VLC_SUCCESS;
 }
@@ -184,11 +212,16 @@ void DataClose(vlc_object_t* p_obj)
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
     if (!s) return;
 
-    // Отписываем listener
-    if (s->p_listener) {
-        Session::get()->unregister_alert_listener(s->p_listener);
-        delete s->p_listener;
+    // Убираем слушатели
+    if (s->p_meta_listener) {
+        Session::get()->unregister_alert_listener(s->p_meta_listener);
+        delete s->p_meta_listener;
     }
+    if (s->p_stat_listener) {
+        Session::get()->unregister_alert_listener(s->p_stat_listener);
+        delete s->p_stat_listener;
+    }
+
     delete s;
     p_extractor->p_sys = nullptr;
 }
