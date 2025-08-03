@@ -1,78 +1,66 @@
+// src/session.h
 /*
-Copyright 2018 Johan Gunnarsson <johan.gunnarsson@gmail.com>
-
-This file is part of vlc-bittorrent.
-
-vlc-bittorrent is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-vlc-bittorrent is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
-*/
+ * Модуль session.h
+ *
+ * Определяет класс Session — обёртку над libtorrent::session,
+ * запускающую фоновый поток обработки алертов, и интерфейс StatusListener
+ * для получения обновлений состояния торрента.
+ *
+ * Место в архитектуре:
+ * - Session хранит глобальную торрент-сессию и пуллистенеров.
+ * - DataOpen регистрирует StatusListener для обновлений,
+ *   а session.cpp раз в секунду извлекает алерты и рассылвает их слушателям.
+ */
 
 #ifndef VLC_BITTORRENT_LIBTORRENT_H
 #define VLC_BITTORRENT_LIBTORRENT_H
 
-#include <forward_list>
+#include <vlc_common.h>
+#include <vlc_plugin.h>
+#include <libtorrent/session.hpp>
+#include <libtorrent/alert.hpp>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <thread>
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#pragma GCC diagnostic ignored "-Wconversion"
-#include <libtorrent/alert.hpp>
-#include <libtorrent/session.hpp>
-#pragma GCC diagnostic pop
-
-struct Alert_Listener {
-    virtual ~Alert_Listener() { }
-
-    virtual void
-    handle_alert(lt::alert* alert)
-        = 0;
+// Интерфейс для получения уведомлений о статусе торрента.
+// Реализуется, чтобы обновлять, например, строку статуса VLC.
+class StatusListener {
+public:
+    virtual ~StatusListener() = default;
+    // Вызывается при каждом обновлении статуса (state_update_alert)
+    virtual void on_status(const lt::torrent_status& st) = 0;
 };
 
+// Класс, оборачивающий libtorrent::session и обеспечивающий
+// фоновой опрос алертов и рассылку их зарегистрированным слушателям.
 class Session {
 public:
-    Session(std::mutex& mtx);
-    ~Session();
+    // Возвращает синглтон-экземпляр Session.
+    static std::shared_ptr<Session> get();
 
-    void
-    register_alert_listener(Alert_Listener* al);
+    // Регистрирует слушателя, которому будут
+    // передаваться результаты опроса состояния торрента.
+    void add_status_listener(vlc_object_t* p_input);
 
-    void
-    unregister_alert_listener(Alert_Listener* al);
-
-    lt::torrent_handle
-    add_torrent(lt::add_torrent_params& atp);
-
-    void
-    remove_torrent(lt::torrent_handle& th, bool k);
-
-    static std::shared_ptr<Session>
-    get();
+    // Убирает слушателя из списка.
+    void remove_status_listener(vlc_object_t* p_input);
 
 private:
-    // Locks mutex passed to constructor
-    std::unique_lock<std::mutex> m_lock;
+    Session();   // Конфигурирует libtorrent и запускает поток
+    ~Session();  // Останавливает поток
 
-    std::unique_ptr<lt::session> m_session;
+    // Функция, выполняемая в отдельном потоке:
+    // ждёт алерты и пересылает их слушателям.
+    void session_thread();
 
-    std::thread m_session_thread;
+    std::unique_ptr<lt::session> m_session; // Внутренний libtorrent::session
+    std::thread                  m_thread;  // Поток polling'а алертов
+    bool                         m_quit = false; // Флаг остановки
 
-    std::atomic<bool> m_session_thread_quit;
-
-    std::forward_list<Alert_Listener*> m_listeners;
-
-    std::mutex m_listeners_mtx;
+    std::mutex                                           m_mtx;       // Защита map-списка
+    std::map<vlc_object_t*, std::shared_ptr<StatusListener>> m_listeners; // Слушатели
 };
 
-#endif
+#endif // VLC_BITTORRENT_LIBTORRENT_H
