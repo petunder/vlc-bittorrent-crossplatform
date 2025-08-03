@@ -2,130 +2,132 @@
 /*
  * Модуль session.cpp
  *
- * Реализует:
- * - Конструктор Session: настраивает параметры libtorrent::session,
- *   в том числе alert_mask и DHT-узлы, и запускает фоновой поток.
- * - Деструктор: корректно завершает поток опроса алертов.
- * - Session::get(): возвращает синглтон-экземпляр.
- * - Методы add/remove_status_listener: регистрация слушателей.
- * - session_thread(): каждую секунду вызывает wait_for_alert,
- *   извлекает state_update_alert и передаёт каждому StatusListener.
- * - Класс VLCStatusUpdater: конкретный StatusListener,
- *   формирующий текст «BT: D=…kB/s U=…kB/s Peers=… […]»
- *   и записывающий его в var_SetString(p_input, "title", …).
- *
- * Место в архитектуре:
- * Ядро обработки событий торрента — непрерывный поллинг и рассылка
- * обновлений плагину (data.cpp) для динамического отображения статуса.
+ *  - Конфигурирует libtorrent::session (alert_mask, DHT-узлы и т.п.).
+ *  - Запускает отдельный поток, который:
+ *      * ждёт алерты (wait_for_alert)
+ *      * собирает их (pop_alerts)
+ *      * раздаёт всем Alert_Listener::handle_alert()
+ *  - Реализует add/remove torrent и register/unregister listener.
  */
 
 #include "session.h"
-#include <vlc_variables.h>
-#include <libtorrent/alert.hpp>
-#include <sstream>
-#include <chrono>
 
-// Какие категории алертов слушать
+#include <libtorrent/alert.hpp>
+#include <libtorrent/session.hpp>
+#include <libtorrent/alert_types.hpp>  // для новых категорий
+#include <chrono>
+#include <vector>
+
+#define D(x)     // отладочный макрос
+#define DD(x)    // ещё один
+
+// Какие алерты слушаем
 #define LIBTORRENT_ADD_TORRENT_ALERTS \
-    (lt::alert::storage_notification       \
+    (lt::alert::storage_notification      \
      | lt::alert::block_progress_notification \
      | lt::alert::piece_progress_notification \
      | lt::alert::file_progress_notification  \
      | lt::alert::status_notification      \
      | lt::alert::error_notification)
 
-// Список DHT-бутстрап-узлов
+// DHT-узлы для bootstrap
 #define LIBTORRENT_DHT_NODES \
-    ("router.bittorrent.com:6881,"            \
-     "router.utorrent.com:6881,"              \
+    ("router.bittorrent.com:6881," \
+     "router.utorrent.com:6881,"   \
      "dht.transmissionbt.com:6881")
 
-// Конкретный слушатель, обновляющий VLC 'title' при каждом статусе
-class VLCStatusUpdater : public StatusListener {
-public:
-    explicit VLCStatusUpdater(vlc_object_t* input)
-        : m_input(input) {}
+Session::Session(std::mutex& mtx)
+    : m_lock(mtx)
+    , m_session_thread_quit(false)
+{
+    D(printf("%s: ctor\n", __func__));
 
-    // Формирует строку вида "BT: D=256kB/s U=12kB/s Peers=8 [43%]"
-    // и записывает её в переменную title текущего VLC-потока.
-    void on_status(const lt::torrent_status& st) override {
-        std::ostringstream oss;
-        oss << "BT: D=" << (st.download_rate / 1000) << "kB/s"
-            << " U=" << (st.upload_rate / 1000)   << "kB/s"
-            << " Peers=" << st.num_peers
-            << " [" << int(st.progress * 100)   << "%]";
-        var_SetString(m_input, "title", oss.str().c_str());
-    }
-
-private:
-    vlc_object_t* m_input; // VLC-объект, у которого меняем title
-};
-
-std::shared_ptr<Session> Session::get() {
-    static std::weak_ptr<Session> inst;
-    static std::mutex             inst_mtx;
-    std::lock_guard<std::mutex> lg(inst_mtx);
-    auto s = inst.lock();
-    if (!s) {
-        s = std::shared_ptr<Session>(new Session());
-        inst = s;
-    }
-    return s;
-}
-
-// Конструктор: настраиваем libtorrent::session и запускаем поток
-Session::Session() {
     lt::settings_pack sp = lt::default_settings();
-    // Подписываемся на нужные алерты
     sp.set_int(sp.alert_mask, LIBTORRENT_ADD_TORRENT_ALERTS);
-    // Задаём DHT-узлы
     sp.set_str(sp.dht_bootstrap_nodes, LIBTORRENT_DHT_NODES);
+
+    // агрессивные настройки для быстрого старта
+    sp.set_bool(sp.strict_end_game_mode, false);
+    sp.set_bool(sp.announce_to_all_trackers, true);
+    sp.set_bool(sp.announce_to_all_tiers, true);
+    sp.set_int(sp.stop_tracker_timeout, 1);
+    sp.set_int(sp.request_timeout, 2);
+    sp.set_int(sp.whole_pieces_threshold, 5);
+    sp.set_int(sp.request_queue_time, 1);
+    sp.set_int(sp.urlseed_pipeline_size, 2);
+#if LIBTORRENT_VERSION_NUM >= 10102
+    sp.set_int(sp.urlseed_max_request_bytes, 100 * 1024);
+#endif
 
     m_session = std::make_unique<lt::session>(sp);
 
-    // Запускаем фоновой поток обработки алертов
-    m_thread = std::thread(&Session::session_thread, this);
-}
+    // Запуск потока
+    m_session_thread = std::thread([&] {
+        while (!m_session_thread_quit) {
+            m_session->wait_for_alert(std::chrono::seconds(1));
+            std::vector<lt::alert*> alerts;
+            m_session->pop_alerts(&alerts);
 
-// Деструктор: мягко завершаем поток
-Session::~Session() {
-    m_quit = true;
-    if (m_thread.joinable())
-        m_thread.join();
-}
-
-// Регистрация слушателя: создаём VLCStatusUpdater
-void Session::add_status_listener(vlc_object_t* p_input) {
-    std::lock_guard<std::mutex> lg(m_mtx);
-    if (m_listeners.count(p_input)) return; // уже есть
-    m_listeners[p_input] = std::make_shared<VLCStatusUpdater>(p_input);
-}
-
-// Удаляем слушателя, когда плагин закрывается
-void Session::remove_status_listener(vlc_object_t* p_input) {
-    std::lock_guard<std::mutex> lg(m_mtx);
-    m_listeners.erase(p_input);
-}
-
-// Фоновая функция: ждем алерты и рассылаем их слушателям
-void Session::session_thread() {
-    while (!m_quit) {
-        // Ждём до 1 секунды, пока не придут алерты
-        m_session->wait_for_alert(std::chrono::seconds(1));
-
-        std::vector<lt::alert*> alerts;
-        m_session->pop_alerts(&alerts);
-
-        std::lock_guard<std::mutex> lg(m_mtx);
-        // Ищем только state_update_alert, содержащий вектор torrent_status
-        for (auto* a : alerts) {
-            if (auto* su = lt::alert_cast<lt::state_update_alert>(a)) {
-                for (auto& st : su->status) {
-                    // Рассылаем каждому зарегистрированному слушателю
-                    for (auto& kv : m_listeners)
-                        kv.second->on_status(st);
+            std::unique_lock<std::mutex> lock(m_listeners_mtx);
+            for (auto* a : alerts) {
+                for (auto* h : m_listeners) {
+                    try { h->handle_alert(a); }
+                    catch (...) { /* silently */ }
                 }
             }
         }
+    });
+}
+
+Session::~Session()
+{
+    D(printf("%s: dtor\n", __func__));
+    m_session_thread_quit = true;
+    if (m_session_thread.joinable())
+        m_session_thread.join();
+}
+
+void Session::register_alert_listener(Alert_Listener* al)
+{
+    D(printf("%s: register %p\n", __func__, al));
+    std::unique_lock<std::mutex> lock(m_listeners_mtx);
+    m_listeners.push_front(al);
+}
+
+void Session::unregister_alert_listener(Alert_Listener* al)
+{
+    D(printf("%s: unregister %p\n", __func__, al));
+    std::unique_lock<std::mutex> lock(m_listeners_mtx);
+    m_listeners.remove(al);
+}
+
+lt::torrent_handle Session::add_torrent(lt::add_torrent_params& atp)
+{
+    D(printf("%s: add torrent\n", __func__));
+    return m_session->add_torrent(atp);
+}
+
+void Session::remove_torrent(lt::torrent_handle& th, bool k)
+{
+    D(printf("%s: remove torrent\n", __func__));
+    if (k)
+        m_session->remove_torrent(th);
+    else
+        m_session->remove_torrent(th, lt::session::delete_files);
+}
+
+std::shared_ptr<Session> Session::get()
+{
+    static std::mutex            inst_mtx;
+    static std::weak_ptr<Session> inst;
+    std::lock_guard<std::mutex> lg(inst_mtx);
+
+    auto s = inst.lock();
+    if (!s) {
+        // Для блокировки создаём отдельный мьютекс
+        static std::mutex mtx;
+        s = std::shared_ptr<Session>(new Session(mtx));
+        inst = s;
     }
+    return s;
 }
