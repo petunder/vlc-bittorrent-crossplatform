@@ -6,8 +6,8 @@
  * Основные задачи:
  * - Реализация функций `DataRead`, `DataSeek`, `DataControl` для взаимодействия с ядром VLC.
  * - **Реализация слушателей алертов для обновления статуса в интерфейсе VLC
- *   путем изменения метаданных текущего проигрываемого элемента (`input_item_t`).
- *   Это единственно верный способ для плагина этого типа влиять на строку статуса.**
+ *   с использованием фильтра Marquee. Это единственно верный и надежный способ
+ *   отображения динамической информации для плагина этого типа.**
  * - Управление жизненным циклом объекта `Download` и регистрация/отмена регистрации слушателей.
  */
 
@@ -25,9 +25,9 @@
 #include <vlc_plugin.h>
 #include <vlc_stream.h>
 #include <vlc_variables.h>
-#include <vlc_input.h>  // Необходимо для доступа к input_thread_t и input_item_t
-#include <vlc_meta.h>   // Необходимо для vlc_meta_Title и функций работы с метаданными
-#include <vlc_events.h> // Необходимо для системы событий
+#include <vlc_input.h>
+#include <vlc_meta.h>
+#include <vlc_events.h>
 
 #include <libtorrent/alert.hpp>
 #include <libtorrent/alert_types.hpp>
@@ -50,26 +50,8 @@ public:
     ~VLCMetadataUpdater() override = default;
 
     void handle_alert(lt::alert* a) override {
-        input_item_t* p_item = nullptr;
-        // --- ИСПРАВЛЕНИЕ 1: Используем vlc_object_parent для получения родителя ---
-        if (m_input) {
-            input_thread_t* p_input_thread = (input_thread_t*)vlc_object_parent(m_input);
-            if(p_input_thread)
-                p_item = input_GetItem(p_input_thread);
-        }
-        
         if (auto* mr = lt::alert_cast<lt::metadata_received_alert>(a)) {
-            if (p_item) {
-                input_item_SetMeta(p_item, vlc_meta_Title, "Metadata OK, starting download...");
-                // --- ИСПРАВЛЕНИЕ 2: Используем систему событий для уведомления ---
-                vlc_event_manager_t *p_em = input_item_GetEventManager(p_item);
-                if (p_em) {
-                    vlc_event_t event;
-                    vlc_event_init(&event, vlc_EvtMetaChanged);
-                    event.u.meta_changed.meta_type = vlc_meta_Title;
-                    vlc_event_send(p_em, &event);
-                }
-            }
+            var_SetString(m_input, "marq-text", "Metadata OK, starting download...");
         }
         else if (auto* dht = lt::alert_cast<lt::dht_stats_alert>(a)) {
             int total_nodes = 0;
@@ -98,32 +80,13 @@ public:
             const lt::torrent_status& st = su->status[0];
 
             std::ostringstream oss;
-            oss << "[ "
-                << "D: " << (st.download_payload_rate / 1000) << " kB/s | "
+            oss << "D: " << (st.download_payload_rate / 1000) << " kB/s | "
                 << "U: " << (st.upload_payload_rate / 1000)   << " kB/s | "
                 << "Peers: " << st.num_peers << " (" << st.num_seeds << ") | "
                 << "DHT: " << g_dht_nodes.load() << " | "
-                << "Progress: " << static_cast<int>(st.progress * 100) << "%"
-                << " ]";
+                << "Progress: " << static_cast<int>(st.progress * 100) << "%";
             
-            // --- ИСПРАВЛЕНИЕ 1: Используем vlc_object_parent для получения родителя ---
-            if (m_input) {
-                input_thread_t* p_input_thread = (input_thread_t*)vlc_object_parent(m_input);
-                if (p_input_thread) {
-                    input_item_t* p_item = input_GetItem(p_input_thread);
-                    if (p_item) {
-                        input_item_SetMeta(p_item, vlc_meta_Title, oss.str().c_str());
-                        // --- ИСПРАВЛЕНИЕ 2: Используем систему событий для уведомления ---
-                        vlc_event_manager_t *p_em = input_item_GetEventManager(p_item);
-                        if (p_em) {
-                            vlc_event_t event;
-                            vlc_event_init(&event, vlc_EvtMetaChanged);
-                            event.u.meta_changed.meta_type = vlc_meta_Title;
-                            vlc_event_send(p_em, &event);
-                        }
-                    }
-                }
-            }
+            var_SetString(m_input, "marq-text", oss.str().c_str());
         }
     }
 
@@ -248,6 +211,17 @@ DataOpen(vlc_object_t* p_obj)
     p_extractor->pf_seek    = DataSeek;
     p_extractor->pf_control = DataControl;
     
+    // --- НАЧАЛО ИЗМЕНЕНИЙ ---
+    // Принудительно настраиваем и включаем Marquee для отображения статуса.
+    // Это самый надежный способ, который не конфликтует с ядром VLC.
+    var_SetString(p_obj, "video-filter", "marq");
+    var_SetString(p_obj, "sub-filter", "marq"); // Также включаем как sub-filter
+    var_SetInteger(p_obj, "marq-position", 8);  // 8 = Внизу (Bottom)
+    var_SetInteger(p_obj, "marq-color", 0xFFFFFF); // Белый цвет
+    var_SetInteger(p_obj, "marq-size", 18); // Размер шрифта
+    var_SetString(p_obj, "marq-text", "Connecting to BitTorrent network...");
+    // --- КОНЕЦ ИЗМЕНЕНИЙ ---
+
     s->p_meta_listener = new VLCMetadataUpdater(p_obj);
     Session::get()->register_alert_listener(s->p_meta_listener);
 
@@ -264,6 +238,13 @@ DataClose(vlc_object_t* p_obj)
     auto* p_extractor = reinterpret_cast<stream_extractor_t*>(p_obj);
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
     if (!s) return;
+
+    // --- НАЧАЛО ИЗМЕНЕНИЙ ---
+    // Очень важно: отключаем Marquee, чтобы он не остался на следующем файле.
+    // Сбрасываем фильтры, чтобы очистить Marquee.
+    var_SetString(p_obj, "video-filter", "");
+    var_SetString(p_obj, "sub-filter", "");
+    // --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
     if (s->p_meta_listener) {
         Session::get()->unregister_alert_listener(s->p_meta_listener);
