@@ -7,7 +7,8 @@
  * - Реализация функций `DataRead`, `DataSeek`, `DataControl` для взаимодействия с ядром VLC.
  * - **Реализация слушателей алертов `VLCStatusUpdater` и `VLCMetadataUpdater` для обновления
  *   статуса в интерфейсе VLC.**
- * - `VLCStatusUpdater` форматирует строку со статистикой (скорость, пиры, DHT) и отображает её.
+ * - `VLCStatusUpdater` форматирует строку со статистикой (скорость, пиры, DHT) и отображает её
+ *   в поле "description", чтобы избежать конфликтов с ядром VLC.
  * - Управление жизненным циклом объекта `Download` и регистрация/отмена регистрации слушателей.
  */
 
@@ -48,10 +49,9 @@ public:
 
     void handle_alert(lt::alert* a) override {
         if (auto* mr = lt::alert_cast<lt::metadata_received_alert>(a)) {
-            var_SetString(m_input, "title", "Metadata OK, starting download...");
+            // ИСПОЛЬЗУЕМ "description" ВМЕСТО "title"
+            var_SetString(m_input, "description", "Metadata OK, starting download...");
         }
-        // --- НАЧАЛО ИСПРАВЛЕНИЯ ---
-        // Ловим алерт о статистике DHT и суммируем узлы из таблицы маршрутизации
         else if (auto* dht = lt::alert_cast<lt::dht_stats_alert>(a)) {
             int total_nodes = 0;
             for(const auto& bucket : dht->routing_table) {
@@ -59,7 +59,6 @@ public:
             }
             g_dht_nodes = total_nodes;
         }
-        // --- КОНЕЦ ИСПРАВЛЕНИЯ ---
     }
 
 private:
@@ -88,7 +87,8 @@ public:
                 << "Progress: " << static_cast<int>(st.progress * 100) << "%"
                 << " ]";
             
-            var_SetString(m_input, "title", oss.str().c_str());
+            // ИСПОЛЬЗУЕМ "description" ВМЕСТО "title"
+            var_SetString(m_input, "description", oss.str().c_str());
         }
     }
 
