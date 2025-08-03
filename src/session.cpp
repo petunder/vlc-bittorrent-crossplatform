@@ -15,17 +15,17 @@
 #include <vector>
 
 #define LIBTORRENT_ADD_TORRENT_ALERTS \
-    (lt::alert::storage_notification       \
+    (lt::alert::storage_notification          \
      | lt::alert::block_progress_notification \
      | lt::alert::piece_progress_notification \
      | lt::alert::file_progress_notification  \
-     | lt::alert::status_notification       \
-     | lt::alert::metadata_notification     \
+     | lt::alert::status_notification         \
+     | lt::alert::tracker_notification        \
      | lt::alert::error_notification)
 
 #define LIBTORRENT_DHT_NODES \
-    ("router.bittorrent.com:6881,"            \
-     "router.utorrent.com:6881,"              \
+    ("router.bittorrent.com:6881,"    \
+     "router.utorrent.com:6881,"      \
      "dht.transmissionbt.com:6881")
 
 Session::Session(std::mutex& global_mtx)
@@ -35,7 +35,7 @@ Session::Session(std::mutex& global_mtx)
     sp.set_int(sp.alert_mask, LIBTORRENT_ADD_TORRENT_ALERTS);
     sp.set_str(sp.dht_bootstrap_nodes, LIBTORRENT_DHT_NODES);
 
-    // агрессивные настройки для скорого старта
+    // Агрессивные настройки для ускорения старта
     sp.set_bool(sp.strict_end_game_mode, false);
     sp.set_bool(sp.announce_to_all_trackers, true);
     sp.set_bool(sp.announce_to_all_tiers, true);
@@ -105,9 +105,9 @@ void Session::session_thread()
 
 std::shared_ptr<Session> Session::get()
 {
-    static std::mutex            inst_mtx;
+    static std::mutex             inst_mtx;
     static std::weak_ptr<Session> inst;
-    std::lock_guard<std::mutex> lg(inst_mtx);
+    std::lock_guard<std::mutex>   lg(inst_mtx);
     auto s = inst.lock();
     if (!s) {
         static std::mutex global_mtx;
