@@ -5,10 +5,9 @@
  *
  * Основные задачи:
  * - Реализация функций `DataRead`, `DataSeek`, `DataControl` для взаимодействия с ядром VLC.
- * - **Реализация слушателей алертов `VLCStatusUpdater` и `VLCMetadataUpdater` для обновления
- *   статуса в интерфейсе VLC.**
- * - `VLCStatusUpdater` форматирует строку со статистикой (скорость, пиры, DHT) и отображает её
- *   в поле "description", чтобы избежать конфликтов с ядром VLC.
+ * - **Реализация слушателей алертов для обновления статуса в интерфейсе VLC
+ *   с использованием фильтра Marquee, так как это единственно верный способ
+ *   отображения динамической информации плагином.**
  * - Управление жизненным циклом объекта `Download` и регистрация/отмена регистрации слушателей.
  */
 
@@ -49,8 +48,8 @@ public:
 
     void handle_alert(lt::alert* a) override {
         if (auto* mr = lt::alert_cast<lt::metadata_received_alert>(a)) {
-            // ИСПОЛЬЗУЕМ "description" ВМЕСТО "title"
-            var_SetString(m_input, "description", "Metadata OK, starting download...");
+            // Используем Marquee для отображения статуса
+            var_SetString(m_input, "marq-text", "Metadata OK, starting download...");
         }
         else if (auto* dht = lt::alert_cast<lt::dht_stats_alert>(a)) {
             int total_nodes = 0;
@@ -79,16 +78,14 @@ public:
             const lt::torrent_status& st = su->status[0];
 
             std::ostringstream oss;
-            oss << "[ "
-                << "D: " << (st.download_payload_rate / 1000) << " kB/s | "
+            oss << "D: " << (st.download_payload_rate / 1000) << " kB/s | "
                 << "U: " << (st.upload_payload_rate / 1000)   << " kB/s | "
                 << "Peers: " << st.num_peers << " (" << st.num_seeds << ") | "
                 << "DHT: " << g_dht_nodes.load() << " | "
-                << "Progress: " << static_cast<int>(st.progress * 100) << "%"
-                << " ]";
+                << "Progress: " << static_cast<int>(st.progress * 100) << "%";
             
-            // ИСПОЛЬЗУЕМ "description" ВМЕСТО "title"
-            var_SetString(m_input, "description", oss.str().c_str());
+            // Используем Marquee для отображения статуса
+            var_SetString(m_input, "marq-text", oss.str().c_str());
         }
     }
 
@@ -212,6 +209,13 @@ DataOpen(vlc_object_t* p_obj)
     p_extractor->pf_read    = DataRead;
     p_extractor->pf_seek    = DataSeek;
     p_extractor->pf_control = DataControl;
+    
+    // --- НАЧАЛО ИЗМЕНЕНИЙ ---
+    // Активируем Marquee и настраиваем его для отображения статуса
+    var_SetBool(p_obj, "marq-enable", true);
+    var_SetInteger(p_obj, "marq-position", 8); // 8 = Bottom (Внизу)
+    var_SetString(p_obj, "marq-text", "Connecting to BitTorrent network...");
+    // --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
     s->p_meta_listener = new VLCMetadataUpdater(p_obj);
     Session::get()->register_alert_listener(s->p_meta_listener);
@@ -229,6 +233,11 @@ DataClose(vlc_object_t* p_obj)
     auto* p_extractor = reinterpret_cast<stream_extractor_t*>(p_obj);
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
     if (!s) return;
+
+    // --- НАЧАЛО ИЗМЕНЕНИЙ ---
+    // Очень важно: отключаем Marquee, чтобы он не остался на следующем файле.
+    var_SetBool(p_obj, "marq-enable", false);
+    // --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
     if (s->p_meta_listener) {
         Session::get()->unregister_alert_listener(s->p_meta_listener);
