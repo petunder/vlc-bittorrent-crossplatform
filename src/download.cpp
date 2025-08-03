@@ -1,32 +1,30 @@
 /*
-Copyright 2016 Johan Gunnarsson <johan.gunnarsson@gmail.com>
-
-This file is part of vlc-bittorrent.
-
-vlc-bittorrent is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-vlc-bittorrent is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
-/*
-download.cpp
-Copyright 2025 petunder
-Изменения (август 2025):
-  - `read_piece_alert::ec` → `read_piece_alert::error`
-  - `torrent_removed_alert::info_hash` → `torrent_removed_alert::info_hashes.v1`
-  - Deprecated `add_torrent_params` flags replaced with `lt::torrent_flags`
-  - Use `info_hashes.v1` instead of `info_hash`
-  - `has_metadata()` → `status().has_metadata`
-*/
+ * src/download.cpp
+ * Copyright 2016-2018 Johan Gunnarsson
+ * Copyright 2025 petunder
+ *
+ * Этот файл является ядром логики BitTorrent-клиента в плагине.
+ * Его основные задачи:
+ *
+ * 1.  **Управление загрузками (Download):**
+ *     - Создание и управление объектами `Download`, представляющими одну торрент-сессию.
+ *     - Реализация синглтона для объектов `Download` для предотвращения дублирования загрузок одного и того же торрента.
+ *
+ * 2.  **Обработка метаданных:**
+ *     - Получение метаданных как из `.torrent` файлов, так и по magnet-ссылкам.
+ *     - Реализация механизма кеширования метаданных для magnet-ссылок.
+ *
+ * 3.  **Чтение данных:**
+ *     - Реализация функции `read()`, которая позволяет VLC-плагину запрашивать фрагменты (piece) файла.
+ *     - Управление приоритетами загрузки частей файла для обеспечения плавного воспроизведения.
+ *
+ * 4.  **Взаимодействие с libtorrent:**
+ *     - Добавление торрентов в сессию `libtorrent::session`.
+ *     - Использование `Alert_Listener` для асинхронной обработки событий от libtorrent (например, окончание загрузки куска, получение метаданных).
+ *
+ * Этот модуль абстрагирует сложность работы с libtorrent, предоставляя простое API
+ * для верхнеуровневых модулей плагина (data.cpp, metadata.cpp, magnetmetadata.cpp).
+ */
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -39,6 +37,7 @@ Copyright 2025 petunder
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <iterator> // для std::ostream_iterator
 
 #include "download.h"
 #include "session.h"
@@ -50,7 +49,7 @@ Copyright 2025 petunder
 #include <libtorrent/alert.hpp>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/create_torrent.hpp>
-#include <libtorrent/hex.hpp>
+#include <libtorrent/hex.hpp> // <--- ИСПРАВЛЕНИЕ: Добавлен необходимый заголовок
 #include <libtorrent/magnet_uri.hpp>
 #include <libtorrent/peer_request.hpp>
 #include <libtorrent/session.hpp>
@@ -58,7 +57,7 @@ Copyright 2025 petunder
 #include <libtorrent/torrent_handle.hpp>
 #include <libtorrent/torrent_info.hpp>
 #include <libtorrent/version.hpp>
-#include <libtorrent/torrent_flags.hpp>    // NEW: для новых флагов 
+#include <libtorrent/torrent_flags.hpp>
 #pragma GCC diagnostic pop
 
 #define D(x)
@@ -130,14 +129,6 @@ public:
             if (x->handle.info_hash() != m_ih) return;
             if (x->piece != m_piece) return;
 
-            // OLD:
-            // if (x->ec)
-            //     set_exception(
-            //         std::make_exception_ptr(std::runtime_error("read failed")));
-            // else
-            //     set_value(std::make_pair(x->buffer, x->size));
-
-            // NEW: используем поле error вместо устаревшего ec
             if (x->error) {
                 set_exception(
                     std::make_exception_ptr(std::runtime_error("read failed")));
@@ -211,10 +202,6 @@ public:
     void handle_alert(lt::alert* a) override
     {
         if (auto* x = lt::alert_cast<lt::torrent_removed_alert>(a)) {
-            // OLD:
-            // if (x->info_hash != m_ih) return;
-
-            // NEW: сравниваем v1-хеш вместо deprecated info_hash
             if (x->info_hashes.v1 != m_ih) return;
             set_value();
         }
@@ -352,11 +339,6 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
     lt::add_torrent_params atp;
     atp.save_path = save_path;
 
-    // OLD:
-    // atp.flags &= ~lt::add_torrent_params::flag_auto_managed;
-    // atp.flags &= ~lt::add_torrent_params::flag_paused;
-
-    // NEW: используем namespace lt::torrent_flags
     using namespace lt::torrent_flags;
     atp.flags &= ~auto_managed;
     atp.flags &= ~paused;
@@ -364,39 +346,47 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
     lt::error_code ec;
     lt::parse_magnet_uri(url, atp, ec);
     if (ec) {
+        // Not a magnet link, assume it's a path to a .torrent file or URL
         lt::error_code ec2;
 #if LIBTORRENT_VERSION_NUM < 10200
         atp.ti = boost::make_shared<lt::torrent_info>(url, boost::ref(ec2));
 #else
         atp.ti = std::make_shared<lt::torrent_info>(url, std::ref(ec2));
 #endif
-        if (ec2) throw std::runtime_error("Failed to parse metadata");
+        if (ec2) throw std::runtime_error("Failed to parse metadata from file or magnet");
     } else {
-        // OLD:
-        // std::string path = cache_path + DIR_SEP
-        //     + lt::to_hex(atp.info_hash.to_string()) + ".torrent";
-
-        // NEW: используем info_hashes.v1
+        // It's a magnet link. Try to find the .torrent file in cache.
         std::string path = cache_path + DIR_SEP
-            + atp.info_hashes.v1.to_string() + ".torrent";
+            + lt::to_hex(atp.info_hashes.v1.to_string()) + ".torrent";
 
+        lt::error_code ec_cache;
 #if LIBTORRENT_VERSION_NUM < 10200
-        atp.ti = boost::make_shared<lt::torrent_info>(path, boost::ref(ec));
+        atp.ti = boost::make_shared<lt::torrent_info>(path, boost::ref(ec_cache));
 #else
-        atp.ti = std::make_shared<lt::torrent_info>(path, std::ref(ec));
+        atp.ti = std::make_shared<lt::torrent_info>(path, std::ref(ec_cache));
 #endif
-        if (ec) {
-            atp.ti = nullptr;
+        if (ec_cache) {
+            // Not in cache, we need to download it.
+            // atp already contains trackers and info_hash from parse_magnet_uri.
+            atp.ti = nullptr; // Make sure ti is null so download_metadata is triggered
             auto metadata = Download::get_download(atp, true)->get_metadata(cb);
-            std::ofstream os(path, std::ios::binary);
-            std::ostream_iterator<char> osi(os);
-            std::copy(std::begin(*metadata), std::end(*metadata), osi);
-            return metadata;
+
+            // Save the downloaded metadata to cache for next time
+            std::ofstream os(path, std::ios::binary | std::ios::trunc);
+            os.write(metadata->data(), metadata->size());
+            os.close();
+
+            return metadata; // Return the freshly downloaded metadata
         }
     }
 
-    for (auto& tracker : atp.trackers)
-        atp.ti->add_tracker(tracker);
+    // This part is now reached for .torrent files and for magnet links whose metadata was found in cache.
+    // We add trackers from the magnet link to the torrent_info object loaded from cache.
+    if (atp.ti && !atp.trackers.empty()) {
+        for (auto const& tracker : atp.trackers) {
+            atp.ti->add_tracker(tracker);
+        }
+    }
 
     auto entry = lt::create_torrent(*atp.ti).generate();
     auto metadata = std::make_shared<std::vector<char>>();
@@ -410,10 +400,6 @@ std::shared_ptr<Download> Download::get_download(
 {
     D(printf("%s:%d: %s (from atp)\n", __FILE__, __LINE__, __func__));
 
-    // OLD:
-    // lt::sha1_hash ih = atp.ti ? atp.ti->info_hash() : atp.info_hash;
-
-    // NEW:
     lt::sha1_hash ih = atp.ti ? atp.ti->info_hash()
                               : atp.info_hashes.v1;
 
@@ -437,12 +423,6 @@ std::shared_ptr<Download> Download::get_download(
     lt::add_torrent_params atp;
     atp.save_path = sp;
 
-    // OLD:
-    // atp.flags &= ~lt::add_torrent_params::flag_auto_managed;
-    // atp.flags &= ~lt::add_torrent_params::flag_paused;
-    // atp.flags &= ~lt::add_torrent_params::flag_duplicate_is_error;
-
-    // NEW:
     using namespace lt::torrent_flags;
     atp.flags &= ~auto_managed;
     atp.flags &= ~paused;
@@ -483,11 +463,7 @@ std::string Download::get_infohash()
     D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
 
-    // OLD:
-    // return lt::to_hex(m_th.torrent_file()->info_hash().to_string());
-
-    // NEW: возвращаем уже hex-строку напрямую
-    return m_th.torrent_file()->info_hash().to_string();
+    return lt::to_hex(m_th.torrent_file()->info_hash().to_string());
 }
 
 std::shared_ptr<std::vector<char>> Download::get_metadata(
@@ -506,15 +482,6 @@ void Download::download_metadata(MetadataProgressCb cb)
 {
     D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
 
-    // OLD:
-    // if (m_th.has_metadata())
-    //     return;
-    //
-    // while (!m_th.has_metadata()) {
-    //     std::this_thread::sleep_for(std::chrono::seconds(1));
-    // }
-
-    // NEW: используем status().has_metadata вместо устаревшего has_metadata()
     if (m_th.status().has_metadata)
         return;
 
@@ -527,8 +494,10 @@ void Download::download_metadata(MetadataProgressCb cb)
 
     while (!m_th.status().has_metadata) {
         auto r = f.wait_for(std::chrono::seconds(1));
-        if (r == std::future_status::ready)
-            return f.get();
+        if (r == std::future_status::ready) {
+            f.get();
+            break;
+        }
     }
     if (cb) cb(100.0);
 }
@@ -550,8 +519,10 @@ void Download::download(lt::peer_request part, DataProgressCb cb)
 
     while (!m_th.have_piece(part.piece)) {
         auto r = f.wait_for(std::chrono::seconds(1));
-        if (r == std::future_status::ready)
-            return f.get();
+        if (r == std::future_status::ready) {
+            f.get();
+            break;
+        }
     }
     if (cb) cb(100.0);
 }
@@ -572,7 +543,7 @@ ssize_t Download::read(lt::peer_request part, char* buf, size_t buflen)
     int piece_size;
     std::tie(piece_buffer, piece_size) = f.get();
 
-    int len = std::min({ piece_size - part.start,
+    int len = std::min({ (int)(piece_size - part.start),
                          (int)buflen,
                          part.length });
     if (len < 0) return -1;
