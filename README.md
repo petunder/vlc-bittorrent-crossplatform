@@ -41,7 +41,7 @@ The root of this repository contains one-click installer scripts:
 
    ```bash
    git clone https://github.com/petunder/vlc-bittorrent-crossplatform.git
-   cd vlc-bittorrent
+   cd vlc-bittorrent-crossplatform
    ```
 
 2. Run the appropriate script:
