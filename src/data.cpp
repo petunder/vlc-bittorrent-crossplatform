@@ -61,17 +61,18 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
     msg_Dbg(p_extractor, "Seek requested to position %" PRIu64, i_pos);
 
     // ШАГ 1: Сообщаем нижележащему потоку VLC о перемотке.
-    // Это ключевой вызов, который сбрасывает часы (reference clock) и буферы.
     if (vlc_stream_Seek(p_extractor->source, i_pos)) {
         msg_Err(p_extractor, "Underlying stream seek failed");
         return VLC_EGENERIC;
     }
 
-    // ШАГ 2: Обновляем нашу внутреннюю позицию.
+    // ШАГ 2: Сброс состояния потока
+    vlc_stream_Control(p_extractor->source, STREAM_RESTART);
+
+    // ШАГ 3: Обновляем нашу внутреннюю позицию.
     s->i_pos = i_pos;
 
-    // ШАГ 3 (Оптимизация): Приказываем libtorrent немедленно скачать
-    // данные с нового места с наивысшим приоритетом.
+    // ШАГ 4 (Оптимизация): Приказываем libtorrent немедленно скачать
     if (s->p_download) {
         msg_Dbg(p_extractor, "Setting piece priority for seeking");
         s->p_download->set_piece_priority(s->i_file, (int64_t)s->i_pos, SEEK_READAHEAD_SIZE, 7);
