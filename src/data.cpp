@@ -115,7 +115,7 @@ static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list arg
 
         default:
             // Пробрасываем все остальные запросы (включая запросы по тайм-кодам)
-            return vlc_stream_FilterControl(p_extractor->source, i_query, args);
+            return vlc_stream_vaControl(p_extractor->source, i_query, args);
     }
 
     return VLC_SUCCESS;
