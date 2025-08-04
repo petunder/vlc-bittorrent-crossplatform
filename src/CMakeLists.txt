@@ -68,7 +68,7 @@ if (WIN32)
             LibtorrentRasterbar::torrent-rasterbar
     )
     # Указываем правильное расширение для Windows
-    set_target_properties(access_bittorrent_plugin PROPERTIES SUFFIX ".dll")
+    set_target_properties(access_bittorrent_plugin PROPERTIES SUFFIX ".so")
 else()
     target_link_libraries(
         access_bittorrent_plugin
@@ -90,7 +90,7 @@ if (WIN32)
         PRIVATE
             ${VLC_LIBRARIES}
     )
-    set_target_properties(intf_torrentstatus_plugin PROPERTIES SUFFIX ".dll")
+    set_target_properties(intf_torrentstatus_plugin PROPERTIES SUFFIX ".so")
 else()
     target_link_libraries(
         intf_torrentstatus_plugin
