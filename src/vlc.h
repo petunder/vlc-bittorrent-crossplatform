@@ -29,10 +29,11 @@ along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wconversion"
-// clang-format off
-// This has to be first because the libvlc headers have issues
+
+// Unified VLC Headers
 #include <vlc_common.h>
-// clang-format off
+#include <vlc_plugin.h>
+#include <vlc_objects.h>
 #include <vlc_access.h>
 #include <vlc_demux.h>
 #include <vlc_dialog.h>
@@ -42,12 +43,14 @@ along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
 #include <vlc_input_item.h>
 #include <vlc_interface.h>
 #include <vlc_interrupt.h>
-#include <vlc_plugin.h>
+#include <vlc_meta.h>
+#include <vlc_playlist.h>
 #include <vlc_stream.h>
 #include <vlc_stream_extractor.h>
 #include <vlc_threads.h>
 #include <vlc_url.h>
 #include <vlc_variables.h>
+
 #pragma GCC diagnostic pop
 
 #define DLDIR_CONFIG "bittorrent-download-path"
