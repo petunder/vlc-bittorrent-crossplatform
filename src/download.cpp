@@ -552,7 +552,7 @@ void Download::download_metadata(MetadataProgressCb cb)
         return;
 
     MetadataDownloadPromise dlprom(m_th.info_hash());
-    AlertSubscriber<RemovePromise> sub(m_session, &dlprom);
+    AlertSubscriber<MetadataDownloadPromise> sub(m_session, &dlprom);
     vlc_interrupt_guard<MetadataDownloadPromise> intrguard(dlprom);
 
     auto f = dlprom.get_future();
