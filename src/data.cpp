@@ -27,7 +27,7 @@
 #include <vlc_variables.h>
 
 #include "data.h"
-#include "download.hh"
+#include "download.h"
 #include "vlc.h"
 
 #define MIN_CACHING_TIME 10000
