@@ -42,6 +42,7 @@ add_library(
         download.cpp
         session.cpp
         vlc.cpp
+        interface.cpp
 )
 
 # линковка
