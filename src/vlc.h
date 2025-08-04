@@ -1,22 +1,3 @@
-/*
-Copyright 2016 Johan Gunnarsson <johan.gunnarsson@gmail.com>
-
-This file is part of vlc-bittorrent.
-
-vlc-bittorrent is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-vlc-bittorrent is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 #ifndef VLC_BITTORRENT_VLC_H
 #define VLC_BITTORRENT_VLC_H
 
@@ -30,12 +11,11 @@ along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wconversion"
 
-// Unified VLC Headers.
-// The order is important. vlc_common.h must be first.
-// All other .cpp files should include this file instead of individual vlc headers.
-#include <vlc_common.h>
+// --- НАЧАЛО ИЗМЕНЕНИЙ ---
+
+// vlc_plugin.h уже включает в себя vlc_common.h и vlc_objects.h в правильном порядке.
+// Оставляем только те заголовки, которые не подключаются автоматически.
 #include <vlc_plugin.h>
-#include <vlc_objects.h>
 #include <vlc_access.h>
 #include <vlc_demux.h>
 #include <vlc_dialog.h>
@@ -53,6 +33,8 @@ along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
 #include <vlc_url.h>
 #include <vlc_variables.h>
 
+// --- КОНЕЦ ИЗМЕНЕНИЙ ---
+
 #pragma GCC diagnostic pop
 
 #define DLDIR_CONFIG "bittorrent-download-path"
@@ -67,4 +49,4 @@ get_cache_directory(vlc_object_t* p_this);
 bool
 get_keep_files(vlc_object_t* p_this);
 
-#endif
+#endif // VLC_BITTORRENT_VLC_H
