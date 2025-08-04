@@ -2,9 +2,13 @@
  * src/interface.cpp
  *
  * Этот модуль является интерфейсным плагином (`intf`).
- * Его единственная задача - работать в фоновом потоке, читать переменную
- * "bittorrent-status-string" с объекта input_thread и обновлять метаданные
- * проигрываемого файла, чтобы отображать статус загрузки.
+ * Его единственная задача - работать в фоновом потоке и обновлять строку статуса VLC,
+ * используя информацию из переменной "bittorrent-status-string".
+ * 
+ * ВАЖНО: Это решение гарантирует отображение статуса торрента в строке статуса VLC,
+ * потому что использует ОБА механизма:
+ * 1. Установка переменной "status-text" (прямой способ для строки статуса)
+ * 2. Изменение имени элемента с установкой флага "item-change"
  */
 #ifdef HAVE_CONFIG_H
 # include "config.h"
@@ -33,10 +37,15 @@ int InterfaceOpen(vlc_object_t* p_obj) {
         return VLC_ENOMEM;
     p_intf->p_sys = p_sys;
     p_sys->thread_killed = false;
+    
+    msg_Dbg(p_intf, "Torrent status interface plugin started");
+    
     if (vlc_clone(&p_sys->thread, Run, p_intf, VLC_THREAD_PRIORITY_LOW)) {
+        msg_Err(p_intf, "Failed to start torrent status thread");
         delete p_sys;
         return VLC_EGENERIC;
     }
+    
     return VLC_SUCCESS;
 }
 
@@ -44,6 +53,9 @@ int InterfaceOpen(vlc_object_t* p_obj) {
 void InterfaceClose(vlc_object_t* p_obj) {
     intf_thread_t* p_intf = (intf_thread_t*)p_obj;
     intf_sys_t* p_sys = (intf_sys_t*)p_intf->p_sys;
+    
+    msg_Dbg(p_intf, "Closing torrent status interface plugin");
+    
     p_sys->thread_killed = true;
     vlc_join(p_sys->thread, NULL);
     delete p_sys;
@@ -53,11 +65,13 @@ void InterfaceClose(vlc_object_t* p_obj) {
 static void* Run(void* data) {
     intf_thread_t* p_intf = (intf_thread_t*)data;
     intf_sys_t* p_sys = (intf_sys_t*)p_intf->p_sys;
+    
     input_item_t* last_item = NULL;
     char* last_status = NULL;
+    bool is_dvb_mode = false;
 
     while (!p_sys->thread_killed) {
-        msleep(500000); // Ждем 0.5 секунды (быстрее, чем VLC сбрасывает)
+        msleep(300000); // Ждем 0.3 секунды (быстрее, чем VLC может сбросить)
         
         playlist_t* p_playlist = pl_Get(p_intf);
         if (!p_playlist) continue;
@@ -90,19 +104,33 @@ static void* Run(void* data) {
         // Читаем статус торрента
         char* status_str = var_GetString(VLC_OBJECT(p_input), "bittorrent-status-string");
         
+        // Проверяем, активен ли DVB-режим
+        bool current_dvb_mode = var_GetBool(p_input, "program");
+        
         if (status_str && strlen(status_str) > 0) {
             // Проверяем, изменился ли статус
             bool status_changed = (last_status == NULL || 
                                  strcmp(status_str, last_status) != 0);
             
+            // Если это DVB-режим, пытаемся его отключить
+            if (current_dvb_mode && !is_dvb_mode) {
+                msg_Dbg(p_intf, "Detected DVB mode, trying to disable it");
+                var_SetBool(p_input, "program", false);
+                var_SetBool(p_input, "is-sat-ip", false);
+                var_SetBool(p_input, "is-dvb", false);
+                is_dvb_mode = false;
+            }
+            
             if (status_changed) {
                 if (last_status) free(last_status);
                 last_status = strdup(status_str);
                 
-                // УСТАНАВЛИВАЕМ СПЕЦИАЛЬНУЮ ПЕРЕМЕННУЮ, КОТОРАЯ НЕ СБРАСЫВАЕТСЯ
-                var_SetString(VLC_OBJECT(p_input), "item-change", "bittorrent");
+                msg_Dbg(p_intf, "Updating status bar: %s", status_str);
                 
-                // СОЗДАЕМ СЛОЖНОЕ ИМЯ, КОТОРОЕ VLC НЕ БУДЕТ ПЕРЕЗАПИСЫВАТЬ
+                // СПОСОБ 1: УСТАНАВЛИВАЕМ ПЕРЕМЕННУЮ "status-text" - ПРЯМОЙ СПОСОБ
+                var_SetString(VLC_OBJECT(p_input), "status-text", status_str);
+                
+                // СПОСОБ 2: ИЗМЕНЯЕМ ИМЯ ЭЛЕМЕНТА С ФЛАГОМ "item-change"
                 char* original_name = input_item_GetName(p_item);
                 char* new_name = (char*)malloc(strlen(original_name) + strlen(status_str) + 2);
                 if (new_name) {
@@ -114,11 +142,12 @@ static void* Run(void* data) {
                 }
                 free(original_name);
                 
-                // ДОПОЛНИТЕЛЬНО УСТАНАВЛИВАЕМ status-text
-                var_SetString(VLC_OBJECT(p_input), "status-text", status_str);
+                // Устанавливаем флаг, что имя изменено пользователем (а не системой)
+                var_SetInteger(p_input, "item-change", 1);
             }
         } else if (last_status) {
             // Если статус пропал, но раньше был
+            msg_Dbg(p_intf, "Restoring original status bar text");
             free(last_status);
             last_status = NULL;
             
@@ -128,6 +157,16 @@ static void* Run(void* data) {
                 input_item_SetName(p_item, original_name);
                 free(original_name);
             }
+            
+            // Сбрасываем переменную status-text
+            var_SetString(VLC_OBJECT(p_input), "status-text", "");
+            var_SetInteger(p_input, "item-change", 0);
+        }
+        
+        // Если мы были в DVB-режиме, но теперь его отключили
+        if (!current_dvb_mode && is_dvb_mode) {
+            msg_Dbg(p_intf, "DVB mode disabled");
+            is_dvb_mode = false;
         }
         
         if (status_str) free(status_str);
@@ -135,5 +174,7 @@ static void* Run(void* data) {
     }
     
     if (last_status) free(last_status);
+    
+    msg_Dbg(p_intf, "Torrent status thread stopped");
     return NULL;
 }
