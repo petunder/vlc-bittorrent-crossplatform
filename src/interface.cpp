@@ -1,27 +1,31 @@
 /*
  * src/interface.cpp
  *
- * Этот модуль является интерфейсным плагином (`intf`).
- * Его единственная задача - работать в фоновом потоке и обновлять строку статуса VLC,
- * используя информацию из переменной "bittorrent-status-string".
+ * Этот модуль является интерфейсным плагином (`intf`). Его роль - отображение
+ * статуса торрент-загрузки в пользовательском интерфейсе VLC.
  *
- * РЕШЕНИЕ ПРОБЛЕМЫ ОТОБРАЖЕНИЯ:
- * Стандартный интерфейс VLC (Qt) игнорирует переменную "status-text" и всегда
- * отдает приоритет имени медиа-элемента (Title). Чтобы гарантированно
- * отобразить статус торрента, мы используем "агрессивный" подход:
+ * ПРОБЛЕМА И РЕШЕНИЕ:
+ * Стандартный интерфейс VLC (Qt) часто игнорирует стандартные механизмы
+ * обновления статусной строки в пользу отображения метаданных файла (Title).
+ * Чтобы гарантированно показать статус торрента, используется метод
+ * "агрессивного похищения заголовка" (aggressive title hijacking):
  *
- * 1. Возвращаемся к потоковой модели с постоянным опросом (polling).
- * 2. В цикле с высокой частотой (каждые 400 мс) мы ПРИНУДИТЕЛЬНО
- *    устанавливаем имя текущего элемента (`input_item_SetName`) равным строке статуса.
- * 3. Это создает "гонку состояний" с интерфейсом VLC, в которой наш плагин
- *    побеждает, так как перезаписывает заголовок чаще, чем его может сбросить GUI.
- * 4. Мы также сохраняем оригинальное имя элемента, чтобы восстановить его,
- *    когда торрент-статус больше не доступен.
+ * 1.  Плагин работает в собственном фоновом потоке, который запускается
+ *     при инициализации (InterfaceOpen).
+ * 2.  В бесконечном цикле поток с высокой частотой (400 мс) запрашивает
+ *     актуальную строку статуса напрямую у глобального синглтона Session.
+ * 3.  Затем он принудительно устанавливает эту строку в качестве имени
+ *     текущего элемента плейлиста (`input_item_SetName`).
+ * 4.  Этот постоянный опрос и установка побеждают попытки интерфейса VLC
+ *     сбросить имя на значение из метаданных, обеспечивая видимость статуса.
+ * 5.  При смене трека или завершении загрузки плагин корректно восстанавливает
+ *     оригинальное имя файла.
  */
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
 #include "interface.h"
+#include "session.h"
 #include <atomic>
 #include <string>
 #include <vlc_interface.h>
@@ -29,22 +33,12 @@
 #include <vlc_input.h>
 #include <vlc_meta.h>
 
-// --- НАЧАЛО ИЗМЕНЕНИЯ: ВОЗВРАЩАЕМ СТРУКТУРУ ДЛЯ ПОТОКА ---
-// Старый код с колбэками был неэффективен.
-/*
-struct intf_sys_t {
-    char* last_status;
-    input_item_t* last_item;
-};
-*/
-// Новый код: структура для управления потоком и состоянием.
 struct intf_sys_t {
     vlc_thread_t thread;
     std::atomic<bool> thread_killed;
-    char* original_name; // Для восстановления исходного имени
+    char* original_name;
     input_item_t* last_item;
 };
-// --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 static void* Run(void* data);
 
@@ -61,18 +55,11 @@ int InterfaceOpen(vlc_object_t* p_obj) {
     
     msg_Dbg(p_intf, "Torrent status interface plugin started (aggressive title-hijack mode)");
     
-    // --- НАЧАЛО ИЗМЕНЕНИЯ: ВОЗВРАЩАЕМ ПОТОК ---
-    // Старый код с колбэками.
-    /*
-    var_AddCallback(VLC_OBJECT(p_intf), "bittorrent-status-string", OnStatusChanged, p_sys);
-    */
-    // Новый код: Запускаем поток для агрессивного опроса.
     if (vlc_clone(&p_sys->thread, Run, p_intf, VLC_THREAD_PRIORITY_LOW)) {
         msg_Err(p_intf, "Failed to start torrent status thread");
         delete p_sys;
         return VLC_EGENERIC;
     }
-    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
     
     return VLC_SUCCESS;
 }
@@ -83,39 +70,30 @@ void InterfaceClose(vlc_object_t* p_obj) {
     
     msg_Dbg(p_intf, "Closing torrent status interface plugin");
     
-    // --- НАЧАЛО ИЗМЕНЕНИЯ: ОСТАНАВЛИВАЕМ ПОТОК ---
-    // Старый код с колбэками.
-    /*
-    var_DelCallback(VLC_OBJECT(p_intf), "bittorrent-status-string", OnStatusChanged, p_sys);
-    */
-    // Новый код: Устанавливаем флаг и ждем завершения потока.
     p_sys->thread_killed = true;
     vlc_join(p_sys->thread, NULL);
     
     if (p_sys->original_name) {
         free(p_sys->original_name);
     }
-    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
     delete p_sys;
 }
 
-// Основной цикл работы плагина, выполняющийся в отдельном потоке
 static void* Run(void* data) {
     intf_thread_t* p_intf = (intf_thread_t*)data;
     intf_sys_t* p_sys = (intf_sys_t*)p_intf->p_sys;
     
     while (!p_sys->thread_killed) {
-        msleep(400000); // Опрашиваем каждые 400 мс. Достаточно быстро, чтобы "победить" GUI.
+        msleep(400000);
         
         playlist_t* p_playlist = pl_Get(p_intf);
         if (!p_playlist) continue;
         
         input_thread_t* p_input = playlist_CurrentInput(p_playlist);
         if (!p_input) {
-             // Если воспроизведение остановлено, сбрасываем состояние.
             if(p_sys->last_item) {
                 p_sys->last_item = NULL;
-                free(p_sys->original_name);
+                if(p_sys->original_name) free(p_sys->original_name);
                 p_sys->original_name = NULL;
             }
             continue;
@@ -127,34 +105,29 @@ static void* Run(void* data) {
             continue;
         }
 
-        // Если элемент сменился, сохраняем его оригинальное имя.
         if (p_item != p_sys->last_item) {
-            if (p_sys->original_name) {
-                free(p_sys->original_name);
-            }
+            if (p_sys->original_name) free(p_sys->original_name);
             p_sys->original_name = input_item_GetName(p_item);
             p_sys->last_item = p_item;
         }
 
-        char* status_str = var_GetString(p_input, "bittorrent-status-string");
+        std::string status = Session::get()->get_active_status_string();
+        const char* status_str = status.c_str();
         
         if (status_str && strlen(status_str) > 0) {
-            // ПРИНУДИТЕЛЬНО УСТАНАВЛИВАЕМ ИМЯ ЭЛЕМЕНТА
-            // Мы не добавляем к имени, а полностью его заменяем.
             input_item_SetName(p_item, status_str);
-            var_SetInteger(p_input, "item-change", 1); // Уведомляем интерфейс
+            var_SetInteger(p_input, "item-change", 1);
         } else {
-            // Если статус торрента пропал, а у нас есть сохраненное имя - восстанавливаем его.
             if (p_sys->original_name) {
-                input_item_SetName(p_item, p_sys->original_name);
-                // После восстановления оригинальное имя нам больше не нужно.
-                free(p_sys->original_name);
-                p_sys->original_name = NULL;
-                var_SetInteger(p_input, "item-change", 0);
+                char* current_name = input_item_GetName(p_item);
+                if(current_name && strcmp(current_name, p_sys->original_name) != 0) {
+                    input_item_SetName(p_item, p_sys->original_name);
+                    var_SetInteger(p_input, "item-change", 1); 
+                }
+                free(current_name);
             }
         }
         
-        if (status_str) free(status_str);
         vlc_object_release(p_input);
     }
     
