@@ -128,7 +128,11 @@ public:
     void handle_alert(lt::alert* a) override
     {
         if (auto* x = lt::alert_cast<lt::read_piece_alert>(a)) {
-            if (x->handle.info_hash() != m_ih) return;
+            #if LIBTORRENT_VERSION_NUM >= 20000
+                if (x->handle.info_hashes().v1 != m_ih) return;
+            #else
+                if (x->handle.info_hash() != m_ih) return;
+            #endif
             if (x->piece != m_piece) return;
 
             if (x->error) {
@@ -156,7 +160,11 @@ public:
     void handle_alert(lt::alert* a) override
     {
         if (auto* x = lt::alert_cast<lt::piece_finished_alert>(a)) {
-            if (x->handle.info_hash() != m_ih) return;
+            #if LIBTORRENT_VERSION_NUM >= 20000
+                if (x->handle.info_hashes().v1 != m_ih) return;
+            #else
+                if (x->handle.info_hash() != m_ih) return;
+            #endif
             if (x->piece_index != m_piece) return;
             set_value();
         }
@@ -177,15 +185,27 @@ public:
     void handle_alert(lt::alert* a) override
     {
         if (auto* x = lt::alert_cast<lt::torrent_error_alert>(a)) {
-            if (x->handle.info_hash() != m_ih) return;
+            #if LIBTORRENT_VERSION_NUM >= 20000
+                if (x->handle.info_hashes().v1 != m_ih) return;
+            #else
+                if (x->handle.info_hash() != m_ih) return;
+            #endif
             set_exception(
                 std::make_exception_ptr(std::runtime_error("metadata failed")));
         } else if (auto* x = lt::alert_cast<lt::metadata_failed_alert>(a)) {
-            if (x->handle.info_hash() != m_ih) return;
+            #if LIBTORRENT_VERSION_NUM >= 20000
+                if (x->handle.info_hashes().v1 != m_ih) return;
+            #else
+                if (x->handle.info_hash() != m_ih) return;
+            #endif
             set_exception(
                 std::make_exception_ptr(std::runtime_error("metadata failed")));
         } else if (auto* x = lt::alert_cast<lt::metadata_received_alert>(a)) {
-            if (x->handle.info_hash() != m_ih) return;
+            #if LIBTORRENT_VERSION_NUM >= 20000
+                if (x->handle.info_hashes().v1 != m_ih) return;
+            #else
+                if (x->handle.info_hash() != m_ih) return;
+            #endif
             set_value();
         }
     }
@@ -383,15 +403,13 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
             atp.trackers = public_trackers;
         }
 
-        // --- НАЧАЛО ИЗМЕНЕНИЯ: ИСПОЛЬЗУЕМ СОВМЕСТИМЫЙ С ВЕРСИЯМИ КОД ---
-        std::string info_hash_str;
-        #if LIBTORRENT_VERSION_NUM >= 10200
-            info_hash_str = lt::to_hex(atp.info_hashes.v1.to_string());
+        #if LIBTORRENT_VERSION_NUM >= 20000
+            std::string path = cache_path + DIR_SEP
+                + lt::to_hex(atp.info_hashes.v1.to_string()) + ".torrent";
         #else
-            info_hash_str = lt::to_hex(atp.info_hash.to_string());
+            std::string path = cache_path + DIR_SEP
+                + lt::to_hex(atp.info_hash.to_string()) + ".torrent";
         #endif
-        std::string path = cache_path + DIR_SEP + info_hash_str + ".torrent";
-        // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         lt::error_code ec_cache;
 #if LIBTORRENT_VERSION_NUM < 10200
@@ -428,22 +446,20 @@ std::shared_ptr<Download> Download::get_download(
 {
     D(printf("%s:%d: %s (from atp)\n", __FILE__, __LINE__, __func__));
     
-    // --- НАЧАЛО ИЗМЕНЕНИЯ: ИСПОЛЬЗУЕМ СОВМЕСТИМЫЙ С ВЕРСИЯМИ КОД ---
     lt::sha1_hash ih;
     if (atp.ti) {
-        #if LIBTORRENT_VERSION_NUM >= 10200
+        #if LIBTORRENT_VERSION_NUM >= 20000
             ih = atp.ti->info_hashes().v1;
         #else
             ih = atp.ti->info_hash();
         #endif
     } else {
-        #if LIBTORRENT_VERSION_NUM >= 10200
+        #if LIBTORRENT_VERSION_NUM >= 20000
             ih = atp.info_hashes.v1;
         #else
             ih = atp.info_hash;
         #endif
     }
-    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     static std::mutex mtx;
     std::unique_lock<std::mutex> lock(mtx);
@@ -504,13 +520,11 @@ std::string Download::get_infohash()
     D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
     
-    // --- НАЧАЛО ИЗМЕНЕНИЯ: ИСПОЛЬЗУЕМ СОВМЕСТИМЫЙ С ВЕРСИЯМИ КОД ---
-    #if LIBTORRENT_VERSION_NUM >= 10200
+    #if LIBTORRENT_VERSION_NUM >= 20000
         return lt::to_hex(m_th.info_hashes().v1.to_string());
     #else
         return lt::to_hex(m_th.info_hash().to_string());
     #endif
-    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 }
 
 lt::torrent_handle Download::get_handle()
@@ -538,7 +552,7 @@ void Download::download_metadata(MetadataProgressCb cb)
         return;
 
     MetadataDownloadPromise dlprom(m_th.info_hash());
-    AlertSubscriber<MetadataDownloadPromise> sub(m_session, &dlprom);
+    AlertSubscriber<RemovePromise> sub(m_session, &dlprom);
     vlc_interrupt_guard<MetadataDownloadPromise> intrguard(dlprom);
 
     auto f = dlprom.get_future();
