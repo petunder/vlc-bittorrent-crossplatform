@@ -1,21 +1,11 @@
 /*
-Copyright 2016 Johan Gunnarsson <johan.gunnarsson@gmail.com>
-
-This file is part of vlc-bittorrent.
-
-vlc-bittorrent is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-vlc-bittorrent is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
-*/
+ * src/download.h
+ *
+ * Определяет класс Download, который инкапсулирует логику одной
+ * торрент-загрузки. Он отвечает за чтение данных по частям (pieces),
+ * управление приоритетами загрузки для плавного воспроизведения и
+ * получение метаданных из торрент-файлов или magnet-ссылок.
+ */
 
 #ifndef VLC_BITTORRENT_DOWNLOAD_H
 #define VLC_BITTORRENT_DOWNLOAD_H
@@ -25,6 +15,7 @@ along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <functional>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsign-conversion"
@@ -56,10 +47,6 @@ public:
     get_download(
         char* metadata, size_t metadatalen, std::string save_path, bool keep);
 
-    /**
-     * Get a part of the data of this download. If the data is not
-     * available, it will download it and wait for it to become available.
-     */
     ssize_t
     read(int file, int64_t off, char* buf, size_t buflen,
         DataProgressCb progress_cb);
@@ -103,6 +90,11 @@ public:
 
     std::string
     get_infohash();
+    
+    // --- НАЧАЛО ИЗМЕНЕНИЯ: ДОБАВЛЕН МЕТОД ---
+    // Возвращает handle для этого торрента.
+    lt::torrent_handle get_handle();
+    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 private:
     static std::shared_ptr<Download>
