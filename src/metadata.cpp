@@ -24,9 +24,9 @@ along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
 #include <memory>
 #include <vector>
 
+#include "vlc.h" // Unified header
 #include "download.h"
 #include "metadata.h"
-#include "vlc.h"
 
 #define D(x)
 
