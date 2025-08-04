@@ -62,12 +62,23 @@ if (WIN32)
     # Указываем правильное расширение для Windows
     set_target_properties(access_bittorrent_plugin PROPERTIES SUFFIX ".dll")
 else()
+    # --- НАЧАЛО ИЗМЕНЕНИЯ: ДОБАВЛЯЕМ `atomic` ---
+    # Старый код не линковал libatomic, что вызывало ошибку "undefined symbol: __atomic_store".
+    # target_link_libraries(
+    #     access_bittorrent_plugin
+    #     PUBLIC
+    #         PkgConfig::VlcPlugin
+    #         PkgConfig::LibtorrentRasterbar
+    # )
+    # Новый код добавляет `atomic` в список библиотек.
     target_link_libraries(
         access_bittorrent_plugin
         PUBLIC
             PkgConfig::VlcPlugin
             PkgConfig::LibtorrentRasterbar
+            atomic
     )
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 endif()
 
 # --- choose install dir -------------------------------------------------
