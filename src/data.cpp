@@ -83,28 +83,41 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
 
 static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list args) {
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
-    if (!s || !s->p_download) return VLC_EGENERIC;
+    if (!s || !s->p_download)
+        return VLC_EGENERIC;
+
     switch (i_query) {
         case STREAM_CAN_SEEK:
         case STREAM_CAN_FASTSEEK:
             *va_arg(args, bool*) = true;
             break;
+
         case STREAM_CAN_PAUSE:
         case STREAM_CAN_CONTROL_PACE:
             *va_arg(args, bool*) = true;
             break;
+
         case STREAM_GET_PTS_DELAY: {
-            int64_t nc = var_InheritInteger(p_extractor, "network-caching");
+            int64_t nc    = var_InheritInteger(p_extractor, "network-caching");
             int64_t delay = (nc > MIN_CACHING_TIME ? nc : MIN_CACHING_TIME) * 1000LL;
             *va_arg(args, int64_t*) = delay;
             break;
         }
-        case STREAM_SET_PAUSE_STATE: break;
-        case STREAM_GET_SIZE:
-            *va_arg(args, uint64_t*) = s->p_download->get_file(p_extractor->identifier).second;
+
+        case STREAM_SET_PAUSE_STATE:
+            // здесь ничего не делаем, но и не возвращаем ошибку
             break;
-        default: return VLC_EGENERIC;
+
+        case STREAM_GET_SIZE:
+            *va_arg(args, uint64_t*) =
+                s->p_download->get_file(p_extractor->identifier).second;
+            break;
+
+        default:
+            // Пробрасываем все остальные запросы (включая запросы по тайм-кодам)
+            return vlc_stream_FilterControl(p_extractor->source, i_query, args);
     }
+
     return VLC_SUCCESS;
 }
 
