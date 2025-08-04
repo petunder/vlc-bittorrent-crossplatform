@@ -21,16 +21,10 @@
 #endif
 #include <memory>
 #include <stdexcept>
-#include <vlc_common.h>
-#include <vlc_plugin.h>
-#include <vlc_stream.h>
-#include <vlc_input.h>
-#include <vlc_variables.h>
-#include <vlc_objects.h>
 
+#include "vlc.h"
 #include "data.h"
 #include "download.h"
-#include "vlc.h"
 
 #define MIN_CACHING_TIME 10000
 // --- НАЧАЛО ИЗМЕНЕНИЯ: КОНСТАНТА ДЛЯ ОПТИМИЗАЦИИ ПЕРЕМОТКИ ---
