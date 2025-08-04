@@ -403,13 +403,13 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
             atp.trackers = public_trackers;
         }
 
+        std::string info_hash_str;
         #if LIBTORRENT_VERSION_NUM >= 20000
-            std::string path = cache_path + DIR_SEP
-                + lt::to_hex(atp.info_hashes.v1.to_string()) + ".torrent";
+            info_hash_str = lt::to_hex(atp.info_hashes.v1.to_string());
         #else
-            std::string path = cache_path + DIR_SEP
-                + lt::to_hex(atp.info_hash.to_string()) + ".torrent";
+            info_hash_str = lt::to_hex(atp.info_hash.to_string());
         #endif
+        std::string path = cache_path + DIR_SEP + info_hash_str + ".torrent";
 
         lt::error_code ec_cache;
 #if LIBTORRENT_VERSION_NUM < 10200
@@ -552,7 +552,9 @@ void Download::download_metadata(MetadataProgressCb cb)
         return;
 
     MetadataDownloadPromise dlprom(m_th.info_hash());
+    // --- НАЧАЛО ИЗМЕНЕНИЯ: ИСПРАВЛЕНА ОШИБКА ТИПА ШАБЛОНА ---
     AlertSubscriber<MetadataDownloadPromise> sub(m_session, &dlprom);
+    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
     vlc_interrupt_guard<MetadataDownloadPromise> intrguard(dlprom);
 
     auto f = dlprom.get_future();
@@ -603,3 +605,11 @@ ssize_t Download::read(lt::peer_request part, char* buf, size_t buflen)
     memcpy(buf, piece_buffer.get() + part.start, (size_t)len);
     return (ssize_t)len;
 }
+
+// --- НАЧАЛО ИЗМЕНЕНИЯ: НОВАЯ ПУБЛИЧНАЯ ФУНКЦИЯ ---
+void Download::set_piece_priority(int file, int64_t off, int size, int priority)
+{
+    // Просто вызываем приватный метод с правильным типом
+    set_piece_priority(file, off, size, (libtorrent::download_priority_t)priority);
+}
+// --- КОНЕЦ ИЗМЕНЕНИЯ ---
