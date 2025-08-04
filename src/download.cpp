@@ -219,34 +219,19 @@ Download::Download(std::mutex& mtx, lt::add_torrent_params& atp, bool k)
     , m_session(Session::get())
 {
     D(printf("%s:%d: %s (from atp)\n", __FILE__, __LINE__, __func__));
-
+    
     // --- НАЧАЛО ИЗМЕНЕНИЯ ---
-    // Старый код: асинхронное добавление торрента.
-    // m_th = m_session->add_torrent(atp);
-    // Новый код: используем async_add_torrent, чтобы не блокировать вызывающий поток.
-    // Это более современный и безопасный подход в асинхронной среде.
-    m_session->async_add_torrent(atp);
-    // Примечание: Для получения torrent_handle после async_add_torrent,
-    // нужно было бы подписаться на torrent_added_alert.
-    // Для простоты и сохранения остальной логики, возвращаемся к синхронному вызову,
-    // но отмечаем, что асинхронный вариант предпочтительнее.
+    // Старый код (неудачная попытка асинхронности).
+    // m_session->async_add_torrent(atp); // ОШИБКА: метод не существует в обертке Session
+    // Новый код: Возвращаемся к оригинальному, синхронному вызову,
+    // так как остальная логика зависит от немедленного получения torrent_handle.
     m_th = m_session->add_torrent(atp);
     // --- КОНЕЦ ИЗМЕНЕНИЯ ---
     
     if (!m_th.is_valid())
         throw std::runtime_error("Failed to add torrent");
     
-    // --- НАЧАЛО ИЗМЕНЕНИЯ ---
-    // Старый код: добавление трекеров по одному через add_tracker.
-    /*
-    if (m_th.is_valid() && !atp.trackers.empty()) {
-        for (const auto& url : atp.trackers) {
-            m_th.add_tracker({url, 0});
-        }
-    }
-    */
-    // Новый код: используем replace_trackers для атомарного обновления всего списка трекеров.
-    // Это более эффективный и предпочтительный способ в современных версиях libtorrent.
+    // Используем replace_trackers - это правильное и современное решение.
     if (m_th.is_valid() && !atp.trackers.empty()) {
         std::vector<lt::announce_entry> announce_entries;
         for (const auto& url : atp.trackers) {
@@ -254,7 +239,6 @@ Download::Download(std::mutex& mtx, lt::add_torrent_params& atp, bool k)
         }
         m_th.replace_trackers(announce_entries);
     }
-    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 }
