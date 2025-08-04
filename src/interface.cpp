@@ -30,10 +30,7 @@
 #include <string>
 #include <sstream>
 #include <map>
-#include <vlc_interface.h>
-#include <vlc_playlist.h>
-#include <vlc_input.h>
-#include <vlc_meta.h>
+#include "vlc.h"
 
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/sha1_hash.hpp>
