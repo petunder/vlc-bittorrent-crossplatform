@@ -6,24 +6,21 @@
  *
  * Основные задачи:
  * - Конфигурация и запуск сессии libtorrent (настройки DHT, маска алертов).
- * - Запуск отдельного потока для обработки алертов от libtorrent.
- * - **Периодический запрос обновлений статуса (`post_torrent_updates`)**, чтобы получать
- *   информацию о скоростях, пирах и т.д.
- * - Предоставление интерфейса для регистрации/отмены регистрации слушателей алертов.
+ * - Запуск отдельного потока для обработки алертов от libtorrent
+ *   и **генерации строки статуса для активного торрента**.
+ * - Предоставление интерфейса для регистрации/отмены регистрации слушателей алертов
+ *   и установки/сброса активного торрента.
  */
 
 #include "session.h"
 #include <libtorrent/alert.hpp>
 #include <libtorrent/session.hpp>
 #include <libtorrent/alert_types.hpp>
+#include <libtorrent/torrent_status.hpp>
+#include <libtorrent/read_session_params.hpp>
 #include <chrono>
 #include <vector>
-
-// --- НАЧАЛО ИЗМЕНЕНИЯ ---
-// Удалены заголовки, специфичные для libtorrent 2.0, которые вызывали ошибку компиляции.
-// #include <libtorrent/session_params.hpp>
-// #include <libtorrent/read_session_params.hpp>
-// --- КОНЕЦ ИЗМЕНЕНИЯ ---
+#include <sstream>
 
 #define LIBTORRENT_ADD_TORRENT_ALERTS \
     (lt::alert::storage_notification          \
@@ -33,7 +30,6 @@
      | lt::alert::status_notification         \
      | lt::alert::tracker_notification        \
      | lt::alert::dht_notification            \
-     | lt::alert::session_log_notification    \
      | lt::alert::error_notification)
 
 #define LIBTORRENT_DHT_NODES \
@@ -61,6 +57,7 @@ Session::Session(std::mutex& global_mtx)
 #endif
 
     m_session = std::make_unique<lt::session>(sp);
+    m_active_torrent_hash = lt::sha1_hash();
 
     m_session_thread = std::thread(&Session::session_thread, this);
 }
@@ -68,10 +65,9 @@ Session::Session(std::mutex& global_mtx)
 Session::~Session()
 {
     m_quit = true;
-    m_session->abort(); 
-    if (m_session_thread.joinable()) {
+    m_session->abort();
+    if (m_session_thread.joinable())
         m_session_thread.join();
-    }
 }
 
 void Session::register_alert_listener(Alert_Listener* al)
@@ -99,31 +95,73 @@ void Session::remove_torrent(lt::torrent_handle& th, bool keep)
         m_session->remove_torrent(th, lt::session::delete_files);
 }
 
+// --- НАЧАЛО ИЗМЕНЕНИЯ: РЕАЛИЗАЦИЯ НОВЫХ МЕТОДОВ ---
+void Session::set_active_torrent(lt::torrent_handle th) {
+    if (th.is_valid()) {
+        m_active_torrent_hash = th.info_hash();
+    }
+}
+
+void Session::clear_active_torrent() {
+    m_active_torrent_hash = lt::sha1_hash(); // Сбрасываем хеш
+}
+
+std::string Session::get_active_status_string() {
+    std::lock_guard<std::mutex> lock(m_status_mutex);
+    return m_status_string;
+}
+// --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
 void Session::session_thread()
 {
     while (!m_quit) {
-        lt::alert* a = m_session->wait_for_alert(std::chrono::seconds(1));
-        if (a == nullptr) continue;
-
-        m_session->post_torrent_updates();
-        m_session->post_dht_stats();
+        m_session->wait_for_alert(std::chrono::seconds(1));
+        if (m_quit) break;
 
         std::vector<lt::alert*> alerts;
         m_session->pop_alerts(&alerts);
 
-        std::lock_guard<std::mutex> lg(m_listeners_mtx);
-        for (auto* alert_item : alerts) {
-            for (auto* h : m_listeners) {
-                try { h->handle_alert(alert_item); }
-                catch (...) {}
+        {
+            std::lock_guard<std::mutex> lg(m_listeners_mtx);
+            for (auto* a : alerts) {
+                for (auto* h : m_listeners) {
+                    try { h->handle_alert(a); }
+                    catch (...) {}
+                }
             }
         }
+        
+        // --- НАЧАЛО ИЗМЕНЕНИЯ: ГЕНЕРАЦИЯ СТАТУСА ---
+        lt::sha1_hash active_hash = m_active_torrent_hash.load();
+        std::string new_status_string = "";
+
+        if (active_hash != lt::sha1_hash()) {
+            lt::torrent_handle th = m_session->find_torrent(active_hash);
+            if (th.is_valid()) {
+                lt::torrent_status st = th.status();
+                if (st.has_metadata) {
+                     std::ostringstream oss;
+                     oss << "[ D: " << (st.download_payload_rate / 1024) << " kB/s | "
+                         << "U: " << (st.upload_payload_rate / 1024)   << " kB/s | "
+                         << "Peers: " << st.num_peers << " (" << st.list_seeds << ") | "
+                         << "Progress: " << static_cast<int>(st.progress * 100) << "% ]";
+                     new_status_string = oss.str();
+                } else {
+                     new_status_string = "[ Downloading metadata... ]";
+                }
+            }
+        }
+        
+        {
+            std::lock_guard<std::mutex> lock(m_status_mutex);
+            m_status_string = new_status_string;
+        }
+        // --- КОНЕЦ ИЗМЕНЕНИЯ ---
     }
 }
 
 std::shared_ptr<Session> Session::get()
 {
-    // Синглтон Мейерса, потокобезопасный и простой.
     static std::shared_ptr<Session> inst = []{
         static std::mutex global_mtx;
         return std::shared_ptr<Session>(new(std::nothrow) Session(global_mtx));
