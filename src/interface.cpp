@@ -24,7 +24,7 @@
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
-#include "interface.hh"
+#include "interface.h"
 #include "session.h"
 #include <atomic>
 #include <string>
