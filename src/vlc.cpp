@@ -22,6 +22,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "vlc.h" // Unified header
+
 // --- НАЧАЛО ИЗМЕНЕНИЯ ---
 // #include <filesystem> // ОШИБКА: Этот заголовок требует C++17, а проект использует C++14.
 // namespace fs = std::filesystem;
