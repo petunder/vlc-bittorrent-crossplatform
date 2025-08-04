@@ -93,7 +93,7 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
 
     // ШАГ 4: СБРОС ВНУТРЕННИХ ЧАСОВ VLC ЧЕРЕЗ СКРЫТЫЙ МЕХАНИЗМ
     // Это ключевой момент - мы устанавливаем флаг "need_start" в input
-    input_thread_t* p_input = vlc_object_find(p_extractor, VLC_OBJECT_INPUT, FIND_PARENT);
+    input_thread_t* p_input = (input_thread_t*)vlc_object_parent(p_extractor);
     if (p_input) {
         msg_Dbg(p_extractor, "Resetting input clock after seek");
         bool was_set = var_SetBool(p_input, "input-restart", true);
