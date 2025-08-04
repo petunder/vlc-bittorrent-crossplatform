@@ -1,16 +1,9 @@
-/*
- * src/interface.h
- *
- * Заголовочный файл для интерфейсного плагина
- */
 #ifndef VLC_BITTORRENT_INTERFACE_H
 #define VLC_BITTORRENT_INTERFACE_H
 
-#include <vlc_common.h>
-#include <vlc_interface.h>
+#include "vlc.h"
 
-// Объявления функций
-int TorrentStatusInterfaceOpen(vlc_object_t* p_obj);
-void TorrentStatusInterfaceClose(vlc_object_t* p_obj);
+int InterfaceOpen(vlc_object_t*);
+void InterfaceClose(vlc_object_t*);
 
-#endif // VLC_BITTORRENT_INTERFACE_H
+#endif
