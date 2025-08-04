@@ -2,18 +2,19 @@
  * src/data.cpp
  *
  * Этот модуль реализует логику потока данных (stream_extractor) для VLC.
- * Его роль в проекте — быть "сигнальным механизмом":
+ * Его роль в проекте — быть "сигнальным механизмом" и обеспечивать
+ * корректную работу с I/O операциями VLC.
  *
- * 1.  При открытии (DataOpen) он получает торрент-хэндл и **устанавливает
- *     глобальную переменную VLC "bittorrent-active-hash"**, содержащую
- *     infohash текущего торрента.
- * 2.  Предоставляет VLC стандартные функции для чтения данных (DataRead),
- *     перемотки (DataSeek) и управления (DataControl).
- * 3.  При закрытии (DataClose), когда VLC выгружает этот модуль, он
- *     **очищает переменную "bittorrent-active-hash"**.
- *
- * Таким образом, этот короткоживущий модуль просто сообщает долгоживущему
- * модулю `interface`, за каким торрентом нужно следить.
+ * 1.  При открытии (DataOpen) он регистрирует активный торрент через
+ *     переменную VLC.
+ * 2.  Предоставляет VLC функции для чтения (DataRead) и управления (DataControl).
+ * 3.  **Ключевая роль:** Реализует **правильную** функцию перемотки (DataSeek).
+ *     Она не только обновляет внутреннюю позицию, но и:
+ *      a) Вызывает vlc_stream_Seek(), чтобы уведомить ядро VLC о перемотке
+ *         и сбросить внутренние часы (reference clock).
+ *      b) Вызывает set_piece_priority(), чтобы приказать libtorrent немедленно
+ *         начать загрузку данных с нового места с наивысшим приоритетом.
+ * 4.  При закрытии (DataClose) он очищает переменную активного торрента.
  */
 #ifdef HAVE_CONFIG_H
 # include "config.h"
@@ -26,10 +27,13 @@
 #include <vlc_variables.h>
 
 #include "data.h"
-#include "download.h"
+#include "download.hh"
 #include "vlc.h"
 
 #define MIN_CACHING_TIME 10000
+// --- НАЧАЛО ИЗМЕНЕНИЯ: КОНСТАНТА ДЛЯ ОПТИМИЗАЦИИ ПЕРЕМОТКИ ---
+#define SEEK_READAHEAD_SIZE (10 * 1024 * 1024) // 10 MB
+// --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 struct data_sys {
     std::shared_ptr<Download> p_download;
@@ -51,18 +55,40 @@ static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_s
     return -1;
 }
 
+// --- НАЧАЛО ИЗМЕНЕНИЯ: ПОЛНАЯ И ПРАВИЛЬНАЯ РЕАЛИЗАЦИЯ ПЕРЕМОТКИ ---
 static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
+    msg_Dbg(p_extractor, "Seek requested to position %" PRIu64, i_pos);
+
+    // ШАГ 1: Сообщаем нижележащему потоку VLC о перемотке.
+    // Это ключевой вызов, который сбрасывает часы (reference clock) и буферы.
+    if (vlc_stream_Seek(p_extractor->source, i_pos)) {
+        msg_Err(p_extractor, "Underlying stream seek failed");
+        return VLC_EGENERIC;
+    }
+
+    // ШАГ 2: Обновляем нашу внутреннюю позицию.
     s->i_pos = i_pos;
+
+    // ШАГ 3 (Оптимизация): Приказываем libtorrent немедленно скачать
+    // данные с нового места с наивысшим приоритетом.
+    if (s->p_download) {
+        msg_Dbg(p_extractor, "Setting piece priority for seeking");
+        s->p_download->set_piece_priority(s->i_file, (int64_t)s->i_pos, SEEK_READAHEAD_SIZE, 7);
+    }
+
     return VLC_SUCCESS;
 }
+// --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list args) {
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
-    if (!s->p_download) return VLC_EGENERIC;
+    if (!s || !s->p_download) return VLC_EGENERIC;
     switch (i_query) {
         case STREAM_CAN_SEEK:
         case STREAM_CAN_FASTSEEK:
+            *va_arg(args, bool*) = true;
+            break;
         case STREAM_CAN_PAUSE:
         case STREAM_CAN_CONTROL_PACE:
             *va_arg(args, bool*) = true;
