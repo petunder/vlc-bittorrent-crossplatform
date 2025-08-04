@@ -43,13 +43,14 @@ add_library(
         download.cpp
         session.cpp
         vlc.cpp
+        # УДАЛЕН interface.cpp из этого плагина
 )
 
 # Создаем интерфейсный плагин для статус бара
 add_library(
     intf_torrentstatus_plugin
     MODULE
-        interface.cpp
+        interface.cpp  # ТОЛЬКО interface.cpp в этом плагине
 )
 
 # --- линковка для access-плагина ---
@@ -89,7 +90,6 @@ if (WIN32)
         PRIVATE
             ${VLC_LIBRARIES}
     )
-    # Указываем правильное расширение для Windows
     set_target_properties(intf_torrentstatus_plugin PROPERTIES SUFFIX ".dll")
 else()
     target_link_libraries(
@@ -162,6 +162,7 @@ target_include_directories(
     access_bittorrent_plugin
     PRIVATE
         ${CMAKE_BINARY_DIR}
+        ${CMAKE_SOURCE_DIR}/src
 )
 
 target_compile_definitions(
