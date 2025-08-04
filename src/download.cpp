@@ -204,7 +204,11 @@ public:
     void handle_alert(lt::alert* a) override
     {
         if (auto* x = lt::alert_cast<lt::torrent_removed_alert>(a)) {
-            if (x->info_hashes.v1 != m_ih) return;
+            #if LIBTORRENT_VERSION_NUM >= 20000
+                if (x->info_hashes.v1 != m_ih) return;
+            #else
+                if (x->info_hash != m_ih) return;
+            #endif
             set_value();
         }
     }
@@ -379,23 +383,13 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
             atp.trackers = public_trackers;
         }
 
-        // --- НАЧАЛО ИЗМЕНЕНИЯ: ИСПРАВЛЕНИЕ СОВМЕСТИМОСТИ ВЕРСИЙ ---
-        // Старый код использовал `atp.info_hashes.v1`, что специфично для libtorrent 2.x
-        // и некоторых версий 1.2.x, но может отсутствовать в других.
-        // std::string path = cache_path + DIR_SEP
-        //     + atp.info_hashes.v1.to_string() + ".torrent";
-        // Новый код использует `atp.info_hash`, который является sha1_hash
-        // и доступен во всех версиях 1.x.
+        // --- НАЧАЛО ИЗМЕНЕНИЯ: ИСПОЛЬЗУЕМ СОВМЕСТИМЫЙ С ВЕРСИЯМИ КОД ---
         std::string info_hash_str;
-        #if LIBTORRENT_VERSION_NUM >= 10200 && LIBTORRENT_VERSION_NUM < 20000
-            // Версии 1.2.x используют info_hashes.v1
+        #if LIBTORRENT_VERSION_NUM >= 10200
             info_hash_str = lt::to_hex(atp.info_hashes.v1.to_string());
         #else
-            // Более старые версии 1.x и 2.x используют info_hash или info_hashes.v1/v2
-            // Для совместимости с 1.x, где parse_magnet_uri заполняет info_hash:
             info_hash_str = lt::to_hex(atp.info_hash.to_string());
         #endif
-
         std::string path = cache_path + DIR_SEP + info_hash_str + ".torrent";
         // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
@@ -433,16 +427,17 @@ std::shared_ptr<Download> Download::get_download(
     lt::add_torrent_params& atp, bool k)
 {
     D(printf("%s:%d: %s (from atp)\n", __FILE__, __LINE__, __func__));
-
-    // --- НАЧАЛО ИЗМЕНЕНИЯ: ИСПРАВЛЕНИЕ СОВМЕСТИМОСТИ ВЕРСИЙ ---
-    // Старый код использовал atp.ti->info_hash() или atp.info_hashes.v1
-    // lt::sha1_hash ih = atp.ti ? atp.ti->info_hash() : atp.info_hashes.v1;
-    // Новый код, который работает с разными версиями
+    
+    // --- НАЧАЛО ИЗМЕНЕНИЯ: ИСПОЛЬЗУЕМ СОВМЕСТИМЫЙ С ВЕРСИЯМИ КОД ---
     lt::sha1_hash ih;
     if (atp.ti) {
-        ih = atp.ti->info_hash();
+        #if LIBTORRENT_VERSION_NUM >= 10200
+            ih = atp.ti->info_hashes().v1;
+        #else
+            ih = atp.ti->info_hash();
+        #endif
     } else {
-        #if LIBTORRENT_VERSION_NUM >= 10200 && LIBTORRENT_VERSION_NUM < 20000
+        #if LIBTORRENT_VERSION_NUM >= 10200
             ih = atp.info_hashes.v1;
         #else
             ih = atp.info_hash;
@@ -509,13 +504,12 @@ std::string Download::get_infohash()
     D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
     
-    // --- НАЧАЛО ИЗМЕНЕНИЯ ---
-    // Старый код был несовместим с libtorrent 1.x
-    // return lt::to_hex(m_th.info_hash().v1);
-    // Новый код: `info_hash()` в libtorrent 1.x возвращает `sha1_hash`,
-    // который имеет метод `to_string()`, возвращающий бинарные данные.
-    // `to_hex` преобразует их в строку.
-    return lt::to_hex(m_th.info_hash().to_string());
+    // --- НАЧАЛО ИЗМЕНЕНИЯ: ИСПОЛЬЗУЕМ СОВМЕСТИМЫЙ С ВЕРСИЯМИ КОД ---
+    #if LIBTORRENT_VERSION_NUM >= 10200
+        return lt::to_hex(m_th.info_hashes().v1.to_string());
+    #else
+        return lt::to_hex(m_th.info_hash().to_string());
+    #endif
     // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 }
 
