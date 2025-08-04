@@ -44,23 +44,34 @@ struct data_sys {
 static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_size) {
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
     if (!s || !s->p_download) return -1;
-
+    
+    // Проверяем, не в состоянии ли мы EOF
+    auto file_info = s->p_download->get_file(p_extractor->identifier);
+    if (s->i_pos >= file_info.second) {
+        msg_Dbg(p_extractor, "Reached EOF at position %" PRIu64, s->i_pos);
+        return 0; // EOF
+    }
+    
     try {
-        ssize_t ret = s->p_download->read(s->i_file, (int64_t)s->i_pos, static_cast<char*>(p_buf), i_size);
+        ssize_t ret = s->p_download->read(s->i_file, (int64_t)s->i_pos, 
+                                         static_cast<char*>(p_buf), i_size);
+        
         if (ret > 0) {
             s->i_pos += ret;
             return ret;
         } else if (ret == 0) {
-            return 0; // EOF - нормально
-        } else {
-            // ret < 0 - данные еще не готовы
-            // VLC ожидает, что мы вернем -1 при ошибке, 0 при EOF, >0 при успехе
-            // Но для потокового режима лучше вернуть 0 и дать время
-            return 0; // ✅ Хорошее решение
+            // Данные еще не готовы, но не EOF
+            msg_Dbg(p_extractor, "Data not ready at position %" PRIu64, s->i_pos);
+            return 0;
         }
+        
+        // ret < 0 - ошибка чтения
+        msg_Dbg(p_extractor, "Read error at position %" PRIu64, s->i_pos);
+        return 0; // Не возвращаем -1, чтобы VLC не прервал воспроизведение
+        
     } catch (const std::runtime_error& e) {
         msg_Dbg(p_extractor, "Read failed: %s", e.what());
-        return 0; // ✅ Верно
+        return 0;
     }
 }
 
