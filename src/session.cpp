@@ -16,25 +16,15 @@
 #include <libtorrent/alert.hpp>
 #include <libtorrent/session.hpp>
 #include <libtorrent/alert_types.hpp>
-#include <libtorrent/session_params.hpp> // Для write_session_params
-#include <libtorrent/read_session_params.hpp> // Для read_session_params
 #include <chrono>
 #include <vector>
 
 // --- НАЧАЛО ИЗМЕНЕНИЯ ---
-// Старая маска алертов не включала dht_notification, что не позволяло получать статистику по DHT.
-/*
-#define LIBTORRENT_ADD_TORRENT_ALERTS \
-    (lt::alert::storage_notification          \
-     | lt::alert::block_progress_notification \
-     | lt::alert::piece_progress_notification \
-     | lt::alert::file_progress_notification  \
-     | lt::alert::status_notification         \
-     | lt::alert::tracker_notification        \
-     | lt::alert::error_notification)
-*/
-// Новая маска добавляет dht_notification для получения dht_stats_alert.
-// Также добавляем session_log_notification для более детальной отладки.
+// Удалены заголовки, специфичные для libtorrent 2.0, которые вызывали ошибку компиляции.
+// #include <libtorrent/session_params.hpp>
+// #include <libtorrent/read_session_params.hpp>
+// --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
 #define LIBTORRENT_ADD_TORRENT_ALERTS \
     (lt::alert::storage_notification          \
      | lt::alert::block_progress_notification \
@@ -45,7 +35,6 @@
      | lt::alert::dht_notification            \
      | lt::alert::session_log_notification    \
      | lt::alert::error_notification)
-// --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 #define LIBTORRENT_DHT_NODES \
     ("router.bittorrent.com:6881,"    \
@@ -78,21 +67,11 @@ Session::Session(std::mutex& global_mtx)
 
 Session::~Session()
 {
-    // --- НАЧАЛО ИЗМЕНЕНИЯ ---
-    // Старый код: мог приводить к гонкам при завершении.
-    /*
     m_quit = true;
-    if (m_session_thread.joinable())
-        m_session_thread.join();
-    */
-    // Новый код: более безопасное завершение сессии.
-    // Сначала посылаем команду на остановку, затем ждем поток.
-    m_quit = true;
-    m_session->abort(); // Прерываем ожидание алертов
+    m_session->abort(); 
     if (m_session_thread.joinable()) {
         m_session_thread.join();
     }
-    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 }
 
 void Session::register_alert_listener(Alert_Listener* al)
@@ -112,14 +91,6 @@ lt::torrent_handle Session::add_torrent(lt::add_torrent_params& atp)
     return m_session->add_torrent(atp);
 }
 
-// --- НАЧАЛО ИЗМЕНЕНИЯ ---
-// Новый асинхронный метод, как более современная альтернатива.
-void Session::async_add_torrent(lt::add_torrent_params& atp) {
-    m_session->async_add_torrent(atp);
-}
-// --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
-
 void Session::remove_torrent(lt::torrent_handle& th, bool keep)
 {
     if (keep)
@@ -131,17 +102,9 @@ void Session::remove_torrent(lt::torrent_handle& th, bool keep)
 void Session::session_thread()
 {
     while (!m_quit) {
-        // --- НАЧАЛО ИЗМЕНЕНИЯ ---
-        // Старый код: простое ожидание.
-        // m_session->wait_for_alert(std::chrono::seconds(1));
-        
-        // Новый код: обрабатываем nullptr, который может вернуть wait_for_alert при вызове abort().
         lt::alert* a = m_session->wait_for_alert(std::chrono::seconds(1));
-        if (a == nullptr) continue; // Сессия завершается
-        // --- КОНЕЦ ИЗМЕНЕНИЯ ---
+        if (a == nullptr) continue;
 
-        // Явно запрашиваем у libtorrent прислать нам алерты
-        // о состоянии торрентов и DHT.
         m_session->post_torrent_updates();
         m_session->post_dht_stats();
 
@@ -160,27 +123,10 @@ void Session::session_thread()
 
 std::shared_ptr<Session> Session::get()
 {
-    // --- НАЧАЛО ИЗМЕНЕНИЯ ---
-    // Старый код: синглтон с внешней синхронизацией, подверженный проблемам.
-    /*
-    static std::mutex             inst_mtx;
-    static std::weak_ptr<Session> inst;
-    std::lock_guard<std::mutex>   lg(inst_mtx);
-    auto s = inst.lock();
-    if (!s) {
-        static std::mutex global_mtx;
-        s = std::shared_ptr<Session>(new Session(global_mtx));
-        inst = s;
-    }
-    return s;
-    */
-    // Новый код: потокобезопасный синглтон Мейерса (C++11 и новее).
-    // Он лениво инициализируется при первом вызове и гарантированно создается один раз.
+    // Синглтон Мейерса, потокобезопасный и простой.
     static std::shared_ptr<Session> inst = []{
         static std::mutex global_mtx;
-        // Используем new(std::nothrow) для большей безопасности
         return std::shared_ptr<Session>(new(std::nothrow) Session(global_mtx));
     }();
     return inst;
-    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 }
