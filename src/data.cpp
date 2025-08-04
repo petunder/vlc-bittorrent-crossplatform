@@ -101,8 +101,11 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
     input_thread_t* p_input = vlc_object_find(p_extractor, VLC_OBJECT_INPUT, FIND_PARENT);
     if (p_input) {
         msg_Dbg(p_extractor, "Resetting input clock after seek");
-        var_SetBool(p_input, "input-restart", true);
+        bool was_set = var_SetBool(p_input, "input-restart", true);
+        msg_Dbg(p_extractor, "input-restart was %s set", was_set ? "successfully" : "NOT");
         vlc_object_release(p_input);
+    } else {
+        msg_Warn(p_extractor, "Failed to find input thread for clock reset");
     }
 
     return VLC_SUCCESS;
