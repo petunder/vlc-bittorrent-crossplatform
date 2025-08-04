@@ -1,21 +1,17 @@
 /*
-Copyright 2018 Johan Gunnarsson <johan.gunnarsson@gmail.com>
-
-This file is part of vlc-bittorrent.
-
-vlc-bittorrent is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-vlc-bittorrent is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
-*/
+ * src/vlc.cpp
+ *
+ * Этот файл является вспомогательным модулем, который предоставляет
+ * обертки для функций VLC API, используемых в других частях плагина.
+ *
+ * Основные задачи:
+ * - Получение и создание директорий для загрузок и кэша,
+ *   используя стандартные пути VLC.
+ * - Инкапсуляция логики работы с конфигурационными переменными VLC,
+ *   такими как `bittorrent-download-path` и `bittorrent-keep-files`.
+ * - Обеспечение консистентной обработки ошибок при работе с файловой
+ *   системой в стиле, принятом в VLC.
+ */
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -27,6 +23,11 @@ along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
 #include <stdexcept>
 #include <string>
 
+// --- НАЧАЛО ИЗМЕНЕНИЯ ---
+// Добавляем заголовок для std::filesystem (требует C++17)
+#include <filesystem>
+namespace fs = std::filesystem;
+// --- КОНЕЦ ИЗМЕНЕНИЯ ---
 #include "vlc.h"
 
 std::string
@@ -37,17 +38,25 @@ get_download_directory(vlc_object_t* p_this)
     std::unique_ptr<char, decltype(&free)> dir(
         var_InheritString(p_this, DLDIR_CONFIG), free);
     if (!dir) {
-        std::unique_ptr<char, decltype(&free)> dir(
+        std::unique_ptr<char, decltype(&free)> user_dir(
             config_GetUserDir(VLC_DOWNLOAD_DIR), free);
-        if (!dir)
-            throw std::runtime_error("Failed to find download directory");
+        if (!user_dir) {
+            // --- НАЧАЛО ИЗМЕНЕНИЯ ---
+            // Старый код: бросает C++ исключение, которое пересекает C-границу и приводит к краху.
+            // throw std::runtime_error("Failed to find download directory");
+            // Новый код: используем VLC-логгер для сообщения об ошибке и возвращаем пустую строку.
+            msg_Err(p_this, "Failed to find user download directory");
+            return "";
+            // --- КОНЕЦ ИЗМЕНЕНИЯ ---
+        }
 
-        dldir = std::string(dir.get());
-
-        if (vlc_mkdir(dldir.c_str(), 0777)) {
-            if (errno != EEXIST)
-                throw std::runtime_error("Failed to create directory (" + dldir
-                    + "): " + strerror(errno));
+        dldir = std::string(user_dir.get());
+        
+        try {
+            fs::create_directories(dldir);
+        } catch (const fs::filesystem_error& e) {
+            msg_Err(p_this, "Failed to create directory (%s): %s", dldir.c_str(), e.what());
+            return "";
         }
 
         dldir += DIR_SEP;
@@ -55,12 +64,25 @@ get_download_directory(vlc_object_t* p_this)
     } else {
         dldir = std::string(dir.get());
     }
-
+    
+    // --- НАЧАЛО ИЗМЕНЕНИЯ ---
+    // Старый код: использование vlc_mkdir и ручная проверка errno.
+    /*
     if (vlc_mkdir(dldir.c_str(), 0777)) {
         if (errno != EEXIST)
             throw std::runtime_error("Failed to create directory (" + dldir
                 + "): " + strerror(errno));
     }
+    */
+    // Новый код: использование std::filesystem, который является идиоматичным,
+    // типобезопасным и кросс-платформенным.
+    try {
+        fs::create_directories(dldir);
+    } catch (const fs::filesystem_error& e) {
+        msg_Err(p_this, "Failed to create directory (%s): %s", dldir.c_str(), e.what());
+        return "";
+    }
+    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     return dldir;
 }
@@ -72,16 +94,35 @@ get_cache_directory(vlc_object_t* p_this)
 
     std::unique_ptr<char, decltype(&free)> dir(
         config_GetUserDir(VLC_CACHE_DIR), free);
-    if (!dir)
-        throw std::runtime_error("Failed to find cache directory");
+    if (!dir) {
+        // --- НАЧАЛО ИЗМЕНЕНИЯ ---
+        // Старый код: бросает исключение.
+        // throw std::runtime_error("Failed to find cache directory");
+        // Новый код: логирует ошибку и возвращает пустую строку.
+        msg_Err(p_this, "Failed to find cache directory");
+        return "";
+        // --- КОНЕЦ ИЗМЕНЕНИЯ ---
+    }
 
     cachedir = std::string(dir.get());
 
+    // --- НАЧАЛО ИЗМЕНЕНИЯ ---
+    // Старый код: vlc_mkdir.
+    /*
     if (vlc_mkdir(cachedir.c_str(), 0777)) {
         if (errno != EEXIST)
             throw std::runtime_error("Failed to create directory (" + cachedir
                 + "): " + strerror(errno));
     }
+    */
+    // Новый код: std::filesystem.
+    try {
+        fs::create_directories(cachedir);
+    } catch (const fs::filesystem_error& e) {
+        msg_Err(p_this, "Failed to create directory (%s): %s", cachedir.c_str(), e.what());
+        return "";
+    }
+    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     return cachedir;
 }
