@@ -22,7 +22,7 @@
 #include <memory>
 #include <stdexcept>
 
-#include "vlc.h"
+#include "vlc.h" // Unified header
 #include "data.h"
 #include "download.h"
 
