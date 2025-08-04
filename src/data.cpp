@@ -33,7 +33,8 @@ public:
     explicit VLCMetadataUpdater(vlc_object_t* input) : m_input(input) {}
     ~VLCMetadataUpdater() override = default;
     void handle_alert(lt::alert* a) override {
-        if (auto* mr = lt::alert_cast<lt::metadata_received_alert>(a)) {
+        if (lt::alert_cast<lt::metadata_received_alert>(a)) {
+            msg_Dbg(m_input, "Metadata received, updating status");
             // Устанавливаем переменную на объекте input_thread
             var_SetString(m_input, "bittorrent-status-string", "Metadata OK, starting download...");
         } else if (auto* dht = lt::alert_cast<lt::dht_stats_alert>(a)) {
@@ -42,6 +43,7 @@ public:
                 total_nodes += bucket.num_nodes;
             }
             g_dht_nodes = total_nodes;
+            msg_Dbg(m_input, "DHT nodes: %d", g_dht_nodes.load());
         }
     }
 private:
@@ -63,6 +65,8 @@ public:
                 << "Peers: " << st.num_peers << " (" << st.num_seeds << ") | "
                 << "DHT: " << g_dht_nodes.load() << " | "
                 << "Progress: " << static_cast<int>(st.progress * 100) << "% ]";
+            
+            msg_Dbg(m_input, "Torrent status update: %s", oss.str().c_str());
             
             // Устанавливаем переменную на объекте input_thread
             var_SetString(m_input, "bittorrent-status-string", oss.str().c_str());
@@ -151,12 +155,15 @@ int DataOpen(vlc_object_t* p_obj) {
     
     // Создаем переменную для хранения статуса
     var_Create(p_obj, "bittorrent-status-string", VLC_VAR_STRING);
+    // Инициализируем пустой строкой
     var_SetString(p_obj, "bittorrent-status-string", "");
     
     // КРИТИЧЕСКИ ВАЖНО: Отключаем DVB-режим
     var_SetBool(p_obj, "program", false);
     var_SetBool(p_obj, "is-sat-ip", false);
     var_SetBool(p_obj, "is-dvb", false);
+    
+    msg_Dbg(p_obj, "Registering torrent status listeners");
     
     s->p_meta_listener = new VLCMetadataUpdater(p_obj);
     Session::get()->register_alert_listener(s->p_meta_listener);
@@ -171,6 +178,8 @@ void DataClose(vlc_object_t* p_obj) {
     auto* p_extractor = reinterpret_cast<stream_extractor_t*>(p_obj);
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
     if (!s) return;
+    
+    msg_Dbg(p_obj, "Unregistering torrent status listeners");
     
     // Очищаем переменную
     var_SetString(p_obj, "bittorrent-status-string", "");
