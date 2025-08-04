@@ -26,6 +26,7 @@
 #include <vlc_stream.h>
 #include <vlc_input.h>
 #include <vlc_variables.h>
+#include <vlc_objects.h>
 
 #include "data.h"
 #include "download.h"
