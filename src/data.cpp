@@ -149,9 +149,8 @@ int DataOpen(vlc_object_t* p_obj) {
     p_extractor->pf_seek = DataSeek;
     p_extractor->pf_control = DataControl;
     
-    // Создаем переменную для хранения статуса на объекте input_thread
+    // Создаем переменную для хранения статуса
     var_Create(p_obj, "bittorrent-status-string", VLC_VAR_STRING);
-    // Инициализируем пустой строкой
     var_SetString(p_obj, "bittorrent-status-string", "");
     
     // КРИТИЧЕСКИ ВАЖНО: Отключаем DVB-режим
@@ -159,7 +158,6 @@ int DataOpen(vlc_object_t* p_obj) {
     var_SetBool(p_obj, "is-sat-ip", false);
     var_SetBool(p_obj, "is-dvb", false);
     
-    // Регистрируем слушатели
     s->p_meta_listener = new VLCMetadataUpdater(p_obj);
     Session::get()->register_alert_listener(s->p_meta_listener);
     s->p_stat_listener = new VLCStatusUpdater(p_obj);
