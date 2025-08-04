@@ -32,7 +32,7 @@
 
 #define MIN_CACHING_TIME 10000
 // --- НАЧАЛО ИЗМЕНЕНИЯ: КОНСТАНТА ДЛЯ ОПТИМИЗАЦИИ ПЕРЕМОТКИ ---
-#define SEEK_READAHEAD_SIZE (10 * 1024 * 1024) // 10 MB
+#define SEEK_READAHEAD_SIZE (20 * 1024 * 1024) // 10 MB
 // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 struct data_sys {
@@ -70,21 +70,21 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
     msg_Dbg(p_extractor, "Seek requested to position %" PRIu64, i_pos);
 
     // ШАГ 1: Сообщаем нижележащему потоку VLC о перемотке.
+    // Это ключевой вызов, который сбрасывает часы (reference clock) и буферы.
     if (vlc_stream_Seek(p_extractor->source, i_pos)) {
         msg_Err(p_extractor, "Underlying stream seek failed");
         return VLC_EGENERIC;
     }
 
-    // ШАГ 2: Сброс состояния потока
-    vlc_stream_Control(p_extractor->source, STREAM_RESTART);
-
-    // ШАГ 3: Обновляем нашу внутреннюю позицию.
+    // ШАГ 2: Обновляем нашу внутреннюю позицию.
     s->i_pos = i_pos;
 
-    // ШАГ 4 (Оптимизация): Приказываем libtorrent немедленно скачать
+    // ШАГ 3 (Оптимизация): Приказываем libtorrent немедленно скачать
+    // данные с нового места с наивысшим приоритетом.
     if (s->p_download) {
         msg_Dbg(p_extractor, "Setting piece priority for seeking");
-        s->p_download->set_piece_priority(s->i_file, (int64_t)s->i_pos, SEEK_READAHEAD_SIZE, 7);
+        // Увеличиваем размер предзагрузки для лучшей отзывчивости при перемотке
+        s->p_download->set_piece_priority(s->i_file, (int64_t)s->i_pos, 20 * 1024 * 1024, 7); // 20 MB, prio 7
     }
 
     return VLC_SUCCESS;
@@ -108,8 +108,9 @@ static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list arg
             break;
 
         case STREAM_GET_PTS_DELAY: {
+            // Увеличиваем минимальное время кэширования для торрентов
             int64_t nc    = var_InheritInteger(p_extractor, "network-caching");
-            int64_t delay = (nc > MIN_CACHING_TIME ? nc : MIN_CACHING_TIME) * 1000LL;
+            int64_t delay = (nc > 3000 ? nc : 3000) * 1000LL; // Минимум 3 секунды
             *va_arg(args, int64_t*) = delay;
             break;
         }
