@@ -12,10 +12,17 @@
 #pragma GCC diagnostic ignored "-Wconversion"
 
 // --- НАЧАЛО ИЗМЕНЕНИЙ ---
+// Unified VLC Headers.
+// Порядок имеет решающее значение.
 
-// vlc_plugin.h уже включает в себя vlc_common.h и vlc_objects.h в правильном порядке.
-// Оставляем только те заголовки, которые не подключаются автоматически.
+// 1. vlc_common.h должен быть первым. Он определяет базовые типы (mtime_t, uint8_t) и макросы (VLC_API).
+#include <vlc_common.h>
+
+// 2. vlc_plugin.h - основной заголовок для плагинов. Он также подключает vlc_objects.h.
 #include <vlc_plugin.h>
+
+// 3. Остальные специфичные для плагина заголовки.
+// Не нужно повторно включать vlc_objects.h, так как он уже есть в vlc_plugin.h.
 #include <vlc_access.h>
 #include <vlc_demux.h>
 #include <vlc_dialog.h>
@@ -32,7 +39,6 @@
 #include <vlc_threads.h>
 #include <vlc_url.h>
 #include <vlc_variables.h>
-
 // --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
 #pragma GCC diagnostic pop
@@ -49,4 +55,4 @@ get_cache_directory(vlc_object_t* p_this);
 bool
 get_keep_files(vlc_object_t* p_this);
 
-#endif // VLC_BITTORRENT_VLC_H
+#endif
