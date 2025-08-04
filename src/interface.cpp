@@ -38,9 +38,7 @@
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/sha1_hash.hpp>
 #include <libtorrent/torrent_status.hpp>
-// --- НАЧАЛО ИЗМЕНЕНИЯ: ДОБАВЛЕН НУЖНЫЙ ЗАГОЛОВОК ---
 #include <libtorrent/hex.hpp>
-// --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 class VLCStatusUpdater : public Alert_Listener {
 public:
@@ -57,17 +55,12 @@ public:
                     << "Peers: " << st.num_peers << " (" << st.list_seeds << ") | "
                     << "DHT: " << m_dht_nodes << " | "
                     << "Progress: " << static_cast<int>(st.progress * 100) << "% ]";
-
-                // --- НАЧАЛО ИЗМЕНЕНИЯ: ИСПОЛЬЗУЕМ СОВРЕМЕННОЕ API ---
-                // Старый код использовал st.info_hash, который является deprecated.
-                // m_status_map[st.info_hash] = oss.str();
-                // Новый код использует info_hashes.v1 для явного указания на SHA1-хеш.
-                #if LIBTORRENT_VERSION_NUM >= 10200
+                
+                #if LIBTORRENT_VERSION_NUM >= 20000
                     m_status_map[st.info_hashes.v1] = oss.str();
                 #else
                     m_status_map[st.info_hash] = oss.str();
                 #endif
-                // --- КОНЕЦ ИЗМЕНЕНИЯ ---
             }
         } else if (auto* dht = lt::alert_cast<lt::dht_stats_alert>(a)) {
             int total_nodes = 0;
@@ -167,12 +160,14 @@ static void* Run(void* data) {
                 p_sys->original_name = NULL;
                 active_hash.clear();
             }
+            vlc_object_release(p_playlist);
             continue;
         }
 
         input_item_t* p_item = input_GetItem(p_input);
         if (!p_item) {
             vlc_object_release(p_input);
+            vlc_object_release(p_playlist);
             continue;
         }
 
@@ -184,10 +179,10 @@ static void* Run(void* data) {
             char* hash_str = var_GetString(p_input, "bittorrent-active-hash");
             if(hash_str && strlen(hash_str) == 40) {
                 // --- НАЧАЛО ИЗМЕНЕНИЯ: ИСПРАВЛЕН ВЫЗОВ from_hex ---
-                // Старый код вызывал несуществующую функцию.
-                // lt::from_hex(hash_str, 20, (char*)&active_hash[0]);
-                // Новый код использует правильную функцию и правильную длину (40 символов).
-                lt::from_hex(hash_str, (char*)active_hash.data());
+                // Старый код: lt::from_hex(hash_str, (char*)active_hash.data()); (неверные аргументы)
+                // Новый код передает все 3 необходимых аргумента: hex-строку, ее длину (40)
+                // и указатель на выходной буфер.
+                lt::from_hex(hash_str, 40, (char*)active_hash.data());
                 // --- КОНЕЦ ИЗМЕНЕНИЯ ---
                 free(hash_str);
             } else {
@@ -216,6 +211,7 @@ static void* Run(void* data) {
         }
         
         vlc_object_release(p_input);
+        vlc_object_release(p_playlist);
     }
     
     msg_Dbg(p_intf, "Torrent status thread stopped");
