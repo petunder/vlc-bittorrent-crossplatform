@@ -12,14 +12,13 @@
 #endif
 
 #include "interface.h"
-#include <atomic> // Используем стандартный C++ atomic
+#include <atomic>
 #include <string>
 
 #include <vlc_interface.h>
 #include <vlc_playlist.h>
 #include <vlc_input.h>
 #include <vlc_meta.h>
-#include <vlc_module.h> // Для поиска нашего модуля
 
 struct intf_sys_t {
     vlc_thread_t thread;
@@ -30,10 +29,12 @@ static void* Run(void* data);
 
 int InterfaceOpen(vlc_object_t* p_obj) {
     intf_thread_t* p_intf = (intf_thread_t*)p_obj;
-    // Используем new/delete для C++
-    intf_sys_t* p_sys = new intf_sys_t();
+    // Используем new(std::nothrow) для безопасности
+    intf_sys_t* p_sys = new(std::nothrow) intf_sys_t();
+    if (!p_sys)
+        return VLC_ENOMEM;
+        
     p_intf->p_sys = p_sys;
-
     p_sys->thread_killed = false;
 
     if (vlc_clone(&p_sys->thread, Run, p_intf, VLC_THREAD_PRIORITY_LOW)) {
@@ -55,7 +56,6 @@ void InterfaceClose(vlc_object_t* p_obj) {
 static void* Run(void* data) {
     intf_thread_t* p_intf = (intf_thread_t*)data;
     intf_sys_t* p_sys = (intf_sys_t*)p_intf->p_sys;
-    vlc_object_t *p_vlc_obj = VLC_OBJECT(p_intf);
 
     char* original_title = NULL;
     input_item_t* last_item = NULL;
@@ -70,6 +70,7 @@ static void* Run(void* data) {
         if (!p_input) {
             // Если ничего не играет, сбрасываем сохраненный заголовок
             if (original_title) {
+                input_item_SetMeta(last_item, vlc_meta_Title, original_title);
                 free(original_title);
                 original_title = NULL;
                 last_item = NULL;
@@ -83,42 +84,49 @@ static void* Run(void* data) {
             continue;
         }
 
-        // Если элемент сменился, сбрасываем сохраненный заголовок
+        // Если элемент сменился, восстанавливаем заголовок предыдущего и сбрасываем состояние
         if (p_item != last_item) {
+            if (original_title && last_item) {
+                input_item_SetMeta(last_item, vlc_meta_Title, original_title);
+            }
             if (original_title) free(original_title);
             original_title = NULL;
             last_item = p_item;
         }
         
-        // Ищем наш stream_extractor по имени
-        module_t *p_module = module_list_get_module_by_capability(p_vlc_obj, "stream_extractor", "bittorrent");
+        // Переменная "bittorrent-status-string" устанавливается на объекте потока (input).
+        // Читаем ее прямо из этого объекта.
+        char* status_str = var_GetString(VLC_OBJECT(p_input), "bittorrent-status-string");
         
-        if (p_module && p_module->p_obj) {
-            char* status_str = var_GetString(p_module->p_obj, "bittorrent-status-string");
-            
-            if (status_str && strlen(status_str) > 0) {
+        if (status_str && strlen(status_str) > 0) {
+            // Если статус есть, сохраняем оригинальный заголовок (если еще не сохранили)
+            if (!original_title) {
+                original_title = input_item_GetMeta(p_item, vlc_meta_Title);
                 if (!original_title) {
-                    original_title = input_item_GetMeta(p_item, vlc_meta_Title);
-                    if (!original_title) original_title = strdup(p_item->psz_name ? p_item->psz_name : "");
+                    // На случай, если метаданных нет, используем имя файла
+                    original_title = strdup(p_item->psz_name ? p_item->psz_name : "");
                 }
-
-                std::string final_title = std::string(original_title) + " " + std::string(status_str);
-                input_item_SetMeta(p_item, vlc_meta_Title, final_title.c_str());
-            } else {
-                 // Если статус пуст, но мы его меняли, восстанавливаем
-                 if (original_title) {
-                    input_item_SetMeta(p_item, vlc_meta_Title, original_title);
-                    free(original_title);
-                    original_title = NULL;
-                 }
             }
-            free(status_str);
+
+            // Формируем новую строку и обновляем метаданные
+            std::string final_title = std::string(original_title) + " " + std::string(status_str);
+            input_item_SetMeta(p_item, vlc_meta_Title, final_title.c_str());
+            
+        } else {
+             // Если статусная строка пуста (например, загрузка завершилась),
+             // восстанавливаем оригинальный заголовок
+             if (original_title) {
+                input_item_SetMeta(p_item, vlc_meta_Title, original_title);
+                free(original_title);
+                original_title = NULL;
+             }
         }
         
+        if (status_str) free(status_str);
         vlc_object_release(p_input);
     }
 
-    // Восстанавливаем оригинальный заголовок при выходе
+    // При выходе из потока, если остался измененный заголовок, восстанавливаем его
     if (original_title && last_item) {
         input_item_SetMeta(last_item, vlc_meta_Title, original_title);
         free(original_title);
