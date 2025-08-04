@@ -31,6 +31,19 @@
 #define SEEK_READAHEAD_SIZE (20 * 1024 * 1024) // 10 MB
 // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
+#if VLC_VERSION_MAJOR >= 4
+static input_thread_t *FindInput(stream_extractor_t *se)
+{
+    for (vlc_object_t *o = VLC_OBJECT(se); o; o = vlc_object_parent(o))
+    {
+        /* "input" – это имя класса input_thread_t в дереве объектов VLC */
+        if (vlc_object_inherits(o, "input"))
+            return (input_thread_t *)o;
+    }
+    return nullptr; /* не нашли */
+}
+#endif
+
 struct data_sys {
     std::shared_ptr<Download> p_download;
     int i_file = 0;
@@ -93,7 +106,15 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
 
     // ШАГ 4: СБРОС ВНУТРЕННИХ ЧАСОВ VLC ЧЕРЕЗ СКРЫТЫЙ МЕХАНИЗМ
     // Это ключевой момент - мы устанавливаем флаг "need_start" в input
-    input_thread_t* p_input = (input_thread_t*)vlc_object_parent(p_extractor);
+    #if VLC_VERSION_MAJOR < 4
+        // Старый API для VLC 3.x
+        input_thread_t* p_input = vlc_object_find(p_extractor, VLC_OBJECT_INPUT, FIND_PARENT);
+    #else
+        // Новый API для VLC 4.x и новее
+        input_thread_t* p_input = FindInput(p_extractor);
+    #endif
+    
+
     if (p_input) {
         msg_Dbg(p_extractor, "Resetting input clock after seek");
         bool was_set = var_SetBool(p_input, "input-restart", true);
