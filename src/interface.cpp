@@ -24,13 +24,15 @@
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
-#include "interface.h"
-#include "session.h"
+
 #include <atomic>
 #include <string>
 #include <sstream>
 #include <map>
-#include "vlc.h"
+
+#include "vlc.h" // Unified header
+#include "interface.h"
+#include "session.h"
 
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/sha1_hash.hpp>
