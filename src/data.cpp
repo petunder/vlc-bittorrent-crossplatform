@@ -25,18 +25,23 @@
 #include "vlc.h"
 
 #define MIN_CACHING_TIME 10000
+// --- НАЧАЛО ИЗМЕНЕНИЯ ---
+// Глобальная переменная для хранения количества DHT-узлов.
+// Использование atomic обеспечивает потокобезопасный доступ.
 static std::atomic<int> g_dht_nodes{0};
 
-// Класс-слушатель для обновления статуса при получении метаданных
+// Класс-слушатель для обновления статуса при получении метаданных и статистики DHT.
 class VLCMetadataUpdater : public Alert_Listener {
 public:
     explicit VLCMetadataUpdater(vlc_object_t* input) : m_input(input) {}
     ~VLCMetadataUpdater() override = default;
     void handle_alert(lt::alert* a) override {
+        // Если получены метаданные, обновляем статус
         if (lt::alert_cast<lt::metadata_received_alert>(a)) {
             msg_Dbg(m_input, "Metadata received, updating status");
             // Устанавливаем переменную на объекте input_thread
             var_SetString(m_input, "bittorrent-status-string", "Metadata OK, starting download...");
+        // Если получена статистика DHT, обновляем счетчик узлов
         } else if (auto* dht = lt::alert_cast<lt::dht_stats_alert>(a)) {
             int total_nodes = 0;
             for(const auto& bucket : dht->routing_table) {
@@ -60,6 +65,7 @@ public:
             if (su->status.empty()) return;
             const lt::torrent_status& st = su->status[0];
             std::ostringstream oss;
+            // Формируем более информативную строку статуса
             oss << "[ D: " << (st.download_payload_rate / 1000) << " kB/s | "
                 << "U: " << (st.upload_payload_rate / 1000)   << " kB/s | "
                 << "Peers: " << st.num_peers << " (" << st.num_seeds << ") | "
@@ -75,14 +81,18 @@ public:
 private:
     vlc_object_t* m_input;
 };
+// --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 // Системная структура для хранения состояния stream_extractor
 struct data_sys {
     std::shared_ptr<Download> p_download;
     int i_file = 0;
     uint64_t i_pos = 0;
+    // --- НАЧАЛО ИЗМЕНЕНИЯ ---
+    // Добавляем указатели на слушателей, чтобы корректно их удалять.
     Alert_Listener* p_meta_listener = nullptr;
     Alert_Listener* p_stat_listener = nullptr;
+    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 };
 
 // Функция чтения данных из торрента для VLC
@@ -92,7 +102,11 @@ static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_s
     try {
         ssize_t ret = s->p_download->read(s->i_file, (int64_t)s->i_pos, static_cast<char*>(p_buf), i_size);
         if (ret > 0) s->i_pos += ret;
-        else if (ret < 0) return 0;
+        // Старый код возвращал 0 при ret < 0, что может быть неверно истолковано.
+        // else if (ret < 0) return 0;
+        // Новый код: если read вернул отрицательное значение (ошибка), возвращаем -1,
+        // а если 0 (конец файла), то 0.
+        else if (ret < 0) return -1;
         return ret;
     } catch (const std::runtime_error& e) {
         msg_Dbg(p_extractor, "Read failed: %s", e.what());
@@ -158,17 +172,21 @@ int DataOpen(vlc_object_t* p_obj) {
     // Инициализируем пустой строкой
     var_SetString(p_obj, "bittorrent-status-string", "");
     
-    // КРИТИЧЕСКИ ВАЖНО: Отключаем DVB-режим
+    // --- НАЧАЛО ИЗМЕНЕНИЯ ---
+    // КРИТИЧЕСКИ ВАЖНО: Отключаем DVB-режим, который может быть ошибочно
+    // активирован VLC для торрент-потоков, что приводит к проблемам с воспроизведением.
     var_SetBool(p_obj, "program", false);
     var_SetBool(p_obj, "is-sat-ip", false);
     var_SetBool(p_obj, "is-dvb", false);
     
     msg_Dbg(p_obj, "Registering torrent status listeners");
     
+    // Регистрируем слушателей для обновления статуса.
     s->p_meta_listener = new VLCMetadataUpdater(p_obj);
     Session::get()->register_alert_listener(s->p_meta_listener);
     s->p_stat_listener = new VLCStatusUpdater(p_obj);
     Session::get()->register_alert_listener(s->p_stat_listener);
+    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
     
     return VLC_SUCCESS;
 }
@@ -181,14 +199,16 @@ void DataClose(vlc_object_t* p_obj) {
     
     msg_Dbg(p_obj, "Unregistering torrent status listeners");
     
-    // Очищаем переменную
+    // --- НАЧАЛО ИЗМЕНЕНИЯ ---
+    // Очищаем переменную статуса при закрытии.
     var_SetString(p_obj, "bittorrent-status-string", "");
     
-    // Очищаем флаги DVB
+    // Сбрасываем флаги DVB, чтобы не влиять на другие потоки.
     var_SetBool(p_obj, "program", false);
     var_SetBool(p_obj, "is-sat-ip", false);
     var_SetBool(p_obj, "is-dvb", false);
     
+    // Корректно отменяем регистрацию и удаляем слушателей.
     if (s->p_meta_listener) {
         Session::get()->unregister_alert_listener(s->p_meta_listener);
         delete s->p_meta_listener;
@@ -197,6 +217,7 @@ void DataClose(vlc_object_t* p_obj) {
         Session::get()->unregister_alert_listener(s->p_stat_listener);
         delete s->p_stat_listener;
     }
+    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
     delete s;
     p_extractor->p_sys = nullptr;
 }
