@@ -4,24 +4,22 @@
  * Этот модуль реализует логику потока данных (stream_extractor) для VLC.
  * Его роль в проекте — быть "сигнальным механизмом":
  *
- * 1.  При открытии (DataOpen) он получает торрент-хэндл и регистрирует
- *     его в глобальном синглтоне Session как "активный".
+ * 1.  При открытии (DataOpen) он получает торрент-хэндл и **устанавливает
+ *     глобальную переменную VLC "bittorrent-active-hash"**, содержащую
+ *     infohash текущего торрента.
  * 2.  Предоставляет VLC стандартные функции для чтения данных (DataRead),
  *     перемотки (DataSeek) и управления (DataControl).
- * 3.  При закрытии (DataClose), когда VLC выгружает этот модуль, он сообщает
- *     синглтону Session, что торрент больше не активен (clear_active_torrent).
+ * 3.  При закрытии (DataClose), когда VLC выгружает этот модуль, он
+ *     **очищает переменную "bittorrent-active-hash"**.
  *
- * Таким образом, этот модуль больше не занимается генерацией статуса, а лишь
- * управляет жизненным циклом "активного" торрента в основной сессии.
+ * Таким образом, этот короткоживущий модуль просто сообщает долгоживущему
+ * модулю `interface`, за каким торрентом нужно следить.
  */
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
 #include <memory>
 #include <stdexcept>
-#include <sstream>
-#include <atomic>
-#include <numeric>
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_stream.h>
@@ -29,12 +27,10 @@
 
 #include "data.h"
 #include "download.h"
-#include "session.h"
 #include "vlc.h"
 
 #define MIN_CACHING_TIME 10000
 
-// Системная структура для хранения состояния stream_extractor
 struct data_sys {
     std::shared_ptr<Download> p_download;
     int i_file = 0;
@@ -47,7 +43,7 @@ static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_s
     try {
         ssize_t ret = s->p_download->read(s->i_file, (int64_t)s->i_pos, static_cast<char*>(p_buf), i_size);
         if (ret > 0) s->i_pos += ret;
-        else if (ret < 0) return 0; // Совместимость с VLC: 0 означает конец потока
+        else if (ret < 0) return 0;
         return ret;
     } catch (const std::runtime_error& e) {
         msg_Dbg(p_extractor, "Read failed: %s", e.what());
@@ -97,10 +93,9 @@ int DataOpen(vlc_object_t* p_obj) {
         s->p_download = Download::get_download(md.get(), (size_t)mdsz, get_download_directory(p_obj), get_keep_files(p_obj));
         s->i_file = s->p_download->get_file(p_extractor->identifier).first;
 
-        // --- НАЧАЛО ИЗМЕНЕНИЯ: РЕГИСТРИРУЕМ АКТИВНЫЙ ТОРРЕНТ ---
-        Session::get()->set_active_torrent(s->p_download->get_handle());
-        msg_Dbg(p_obj, "Torrent handle registered as active.");
-        // --- КОНЕЦ ИЗМЕНЕНИЯ ---
+        std::string infohash = s->p_download->get_infohash();
+        var_SetString(p_obj, "bittorrent-active-hash", infohash.c_str());
+        msg_Dbg(p_obj, "Set active torrent hash: %s", infohash.c_str());
 
     } catch (const std::runtime_error& e) {
         msg_Err(p_extractor, "Failed to add download: %s", e.what());
@@ -118,14 +113,12 @@ int DataOpen(vlc_object_t* p_obj) {
 
 void DataClose(vlc_object_t* p_obj) {
     auto* p_extractor = reinterpret_cast<stream_extractor_t*>(p_obj);
+    var_SetString(p_obj, "bittorrent-active-hash", "");
+    msg_Dbg(p_obj, "Cleared active torrent hash.");
+    
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
     if (!s) return;
     
-    // --- НАЧАЛО ИЗМЕНЕНИЯ: ДЕРЕГИСТРИРУЕМ АКТИВНЫЙ ТОРРЕНТ ---
-    Session::get()->clear_active_torrent();
-    msg_Dbg(p_obj, "Torrent handle unregistered as active.");
-    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
     delete s;
     p_extractor->p_sys = nullptr;
 }
