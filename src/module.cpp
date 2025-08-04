@@ -26,6 +26,7 @@ along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
 #include "data.h"
 #include "magnetmetadata.h"
 #include "metadata.h"
+#include "interface.h"
 
 // clang-format off
 
@@ -59,4 +60,10 @@ vlc_module_begin()
         set_capability("access", 60)
         add_shortcut("file", "magnet")
         set_callbacks(MagnetMetadataOpen, MagnetMetadataClose)
+
+    add_submodule()
+        set_description("Bittorrent Status Updater")
+        set_capability("interface", 0)
+        set_callbacks(InterfaceOpen, InterfaceClose)
+
 vlc_module_end()
