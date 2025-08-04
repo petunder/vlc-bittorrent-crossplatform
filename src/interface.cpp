@@ -2,13 +2,8 @@
  * src/interface.cpp
  *
  * Этот модуль является интерфейсным плагином (`intf`).
- * Его единственная задача - работать в фоновом потоке и обновлять строку статуса VLC,
- * используя информацию из переменной "bittorrent-status-string".
- * 
- * ВАЖНО: Это решение гарантированно работает, потому что:
- * 1. Отключает DVB-режим (иначе VLC игнорирует status-text)
- * 2. Использует переменную "status-text" - единственный официальный способ
- *    изменить текст в строке статуса VLC
+ * Его единственная задача - напрямую обновлять строку статуса VLC через Qt,
+ * минуя внутренние механизмы VLC, которые не работают в данном случае.
  */
 #ifdef HAVE_CONFIG_H
 # include "config.h"
@@ -19,6 +14,12 @@
 #include <vlc_interface.h>
 #include <vlc_playlist.h>
 #include <vlc_input.h>
+#include <vlc_variables.h>
+
+// Для доступа к Qt
+#include <QWidget>
+#include <QStatusBar>
+#include <QApplication>
 
 // Системная структура для хранения состояния интерфейса
 struct intf_sys_t {
@@ -29,7 +30,7 @@ struct intf_sys_t {
 static void* Run(void* data);
 
 // Функция инициализации интерфейсного плагина
-int InterfaceOpen(vlc_object_t* p_obj) {
+int TorrentStatusInterfaceOpen(vlc_object_t* p_obj) {
     intf_thread_t* p_intf = (intf_thread_t*)p_obj;
     intf_sys_t* p_sys = new(std::nothrow) intf_sys_t();
     if (!p_sys)
@@ -37,10 +38,10 @@ int InterfaceOpen(vlc_object_t* p_obj) {
     p_intf->p_sys = p_sys;
     p_sys->thread_killed = false;
     
-    msg_Dbg(p_intf, "Torrent status interface plugin started");
+    msg_Dbg(p_obj, "Torrent status interface plugin is loading");
     
     if (vlc_clone(&p_sys->thread, Run, p_intf, VLC_THREAD_PRIORITY_LOW)) {
-        msg_Err(p_intf, "Failed to start torrent status thread");
+        msg_Err(p_obj, "Failed to start torrent status thread");
         delete p_sys;
         return VLC_EGENERIC;
     }
@@ -49,11 +50,11 @@ int InterfaceOpen(vlc_object_t* p_obj) {
 }
 
 // Функция закрытия и очистки ресурсов интерфейса
-void InterfaceClose(vlc_object_t* p_obj) {
+void TorrentStatusInterfaceClose(vlc_object_t* p_obj) {
     intf_thread_t* p_intf = (intf_thread_t*)p_obj;
     intf_sys_t* p_sys = (intf_sys_t*)p_intf->p_sys;
     
-    msg_Dbg(p_intf, "Closing torrent status interface plugin");
+    msg_Dbg(p_obj, "Closing torrent status interface plugin");
     
     p_sys->thread_killed = true;
     vlc_join(p_sys->thread, NULL);
@@ -65,11 +66,14 @@ static void* Run(void* data) {
     intf_thread_t* p_intf = (intf_thread_t*)data;
     intf_sys_t* p_sys = (intf_sys_t*)p_intf->p_sys;
     char* last_status = NULL;
-    bool is_dvb_mode = false;
+    bool qt_initialized = false;
 
+    msg_Dbg(p_intf, "Torrent status thread started");
+    
     while (!p_sys->thread_killed) {
-        msleep(300000); // Ждем 0.3 секунды (быстрее, чем VLC может сбросить)
+        msleep(300000); // Ждем 0.3 секунды
         
+        // 1. Проверяем, есть ли активный поток
         playlist_t* p_playlist = pl_Get(p_intf);
         if (!p_playlist) continue;
         
@@ -79,24 +83,41 @@ static void* Run(void* data) {
                 free(last_status);
                 last_status = NULL;
             }
+            vlc_object_release(p_playlist);
+            continue;
+        }
+        vlc_object_release(p_playlist);
+
+        // 2. Читаем статус торрента
+        char* status_str = var_GetString(VLC_OBJECT(p_input), "bittorrent-status-string");
+        
+        // 3. Получаем доступ к Qt-интерфейсу
+        QWidget* p_main_window = (QWidget*)p_intf->p_sys->p_main_window;
+        
+        if (!p_main_window) {
+            msg_Dbg(p_intf, "Main window not available yet");
+            
+            if (status_str) free(status_str);
+            vlc_object_release(p_input);
+            continue;
+        }
+        
+        // Убедимся, что Qt инициализирован
+        if (!qt_initialized) {
+            msg_Dbg(p_intf, "Qt interface initialized");
+            qt_initialized = true;
+        }
+        
+        QStatusBar* p_status_bar = p_main_window->findChild<QStatusBar*>();
+        if (!p_status_bar) {
+            msg_Dbg(p_intf, "Status bar not found in Qt interface");
+            
+            if (status_str) free(status_str);
+            vlc_object_release(p_input);
             continue;
         }
 
-        // Проверяем, активен ли DVB-режим
-        bool current_dvb_mode = var_GetBool(p_input, "program");
-        
-        // Если это DVB-режим, пытаемся его отключить
-        if (current_dvb_mode && !is_dvb_mode) {
-            msg_Dbg(p_intf, "Detected DVB mode, trying to disable it");
-            var_SetBool(p_input, "program", false);
-            var_SetBool(p_input, "is-sat-ip", false);
-            var_SetBool(p_input, "is-dvb", false);
-            is_dvb_mode = false;
-        }
-        
-        // Читаем статус торрента
-        char* status_str = var_GetString(VLC_OBJECT(p_input), "bittorrent-status-string");
-        
+        // 4. Обновляем статус в зависимости от данных
         if (status_str && strlen(status_str) > 0) {
             // Проверяем, изменился ли статус
             bool status_changed = (last_status == NULL || 
@@ -108,8 +129,9 @@ static void* Run(void* data) {
                 if (last_status) free(last_status);
                 last_status = strdup(status_str);
                 
-                // ЕДИНСТВЕННЫЙ РАБОЧИЙ СПОСОБ: УСТАНАВЛИВАЕМ ПЕРЕМЕННУЮ "status-text"
-                var_SetString(VLC_OBJECT(p_input), "status-text", status_str);
+                // ПРЯМОЙ ВЫЗОВ Qt ДЛЯ ОБНОВЛЕНИЯ СТРОКИ СТАТУСА
+                QString status = QString::fromUtf8(status_str);
+                p_status_bar->showMessage(status);
             }
         } else if (last_status) {
             // Если статус пропал, но раньше был
@@ -117,14 +139,17 @@ static void* Run(void* data) {
             free(last_status);
             last_status = NULL;
             
-            // Сбрасываем переменную status-text
-            var_SetString(VLC_OBJECT(p_input), "status-text", "");
-        }
-        
-        // Если мы были в DVB-режиме, но теперь его отключили
-        if (!current_dvb_mode && is_dvb_mode) {
-            msg_Dbg(p_intf, "DVB mode disabled");
-            is_dvb_mode = false;
+            // Восстанавливаем оригинальный статус через VLC
+            input_item_t* p_item = input_GetItem(p_input);
+            if (p_item) {
+                // Получаем оригинальное имя файла
+                const char* original_name = input_item_GetName(p_item);
+                if (original_name) {
+                    QString status = QString::fromUtf8(original_name);
+                    p_status_bar->showMessage(status);
+                }
+                input_item_Release(p_item);
+            }
         }
         
         if (status_str) free(status_str);
@@ -136,3 +161,13 @@ static void* Run(void* data) {
     msg_Dbg(p_intf, "Torrent status thread stopped");
     return NULL;
 }
+
+// Регистрация интерфейсного модуля
+vlc_module_begin()
+    set_shortname("torrentstatus")
+    set_description("Displays torrent status in status bar")
+    set_category(N_("Interface"))
+    set_subcategory(N_("Control"))
+    set_capability("interface", 0)
+    set_callbacks(TorrentStatusInterfaceOpen, TorrentStatusInterfaceClose)
+vlc_module_end()
