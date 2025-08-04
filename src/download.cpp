@@ -38,8 +38,8 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
-#include <iterator> // для std::ostream_iterator
-#include <vector>   // для std::vector
+#include <iterator>
+#include <vector>
 
 #include "download.h"
 #include "session.h"
@@ -219,19 +219,11 @@ Download::Download(std::mutex& mtx, lt::add_torrent_params& atp, bool k)
     , m_session(Session::get())
 {
     D(printf("%s:%d: %s (from atp)\n", __FILE__, __LINE__, __func__));
-    
-    // --- НАЧАЛО ИЗМЕНЕНИЯ ---
-    // Старый код (неудачная попытка асинхронности).
-    // m_session->async_add_torrent(atp); // ОШИБКА: метод не существует в обертке Session
-    // Новый код: Возвращаемся к оригинальному, синхронному вызову,
-    // так как остальная логика зависит от немедленного получения torrent_handle.
+
     m_th = m_session->add_torrent(atp);
-    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
-    
     if (!m_th.is_valid())
         throw std::runtime_error("Failed to add torrent");
     
-    // Используем replace_trackers - это правильное и современное решение.
     if (m_th.is_valid() && !atp.trackers.empty()) {
         std::vector<lt::announce_entry> announce_entries;
         for (const auto& url : atp.trackers) {
@@ -330,7 +322,6 @@ std::vector<std::pair<std::string, uint64_t>> Download::get_files()
     return files;
 }
 
-// static
 std::vector<std::pair<std::string, uint64_t>>
 Download::get_files(char* metadata, size_t metadatasz)
 {
@@ -347,7 +338,6 @@ Download::get_files(char* metadata, size_t metadatasz)
     return files;
 }
 
-// static
 std::shared_ptr<std::vector<char>> Download::get_metadata(
     std::string url, std::string save_path,
     std::string cache_path, MetadataProgressCb cb)
@@ -377,7 +367,6 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
     lt::error_code ec;
     lt::parse_magnet_uri(url, atp, ec);
     if (ec) {
-        // Not a magnet link, assume it's a path to a .torrent file or URL
         lt::error_code ec2;
 #if LIBTORRENT_VERSION_NUM < 10200
         atp.ti = boost::make_shared<lt::torrent_info>(url, boost::ref(ec2));
@@ -386,12 +375,10 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
 #endif
         if (ec2) throw std::runtime_error("Failed to parse metadata from file or magnet");
     } else {
-        // It's a magnet-link. If no trackers are present, add the public ones.
         if (atp.trackers.empty()) {
             atp.trackers = public_trackers;
         }
 
-        // Try to find the .torrent file in cache.
         std::string path = cache_path + DIR_SEP
             + atp.info_hashes.v1.to_string() + ".torrent";
 
@@ -402,11 +389,9 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
         atp.ti = std::make_shared<lt::torrent_info>(path, std::ref(ec_cache));
 #endif
         if (ec_cache) {
-            // Not in cache, we need to download it.
             atp.ti = nullptr;
             auto metadata = Download::get_download(atp, true)->get_metadata(cb);
 
-            // Save the downloaded metadata to cache for next time
             std::ofstream os(path, std::ios::binary | std::ios::trunc);
             os.write(metadata->data(), metadata->size());
             os.close();
@@ -427,7 +412,6 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
     return metadata;
 }
 
-// static
 std::shared_ptr<Download> Download::get_download(
     lt::add_torrent_params& atp, bool k)
 {
@@ -447,7 +431,6 @@ std::shared_ptr<Download> Download::get_download(
     return dl;
 }
 
-// static
 std::shared_ptr<Download> Download::get_download(
     char* md, size_t mdsz, std::string sp, bool k)
 {
@@ -496,8 +479,15 @@ std::string Download::get_infohash()
     D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
     
-    return m_th.torrent_file()->info_hash().to_string();
+    return lt::to_hex(m_th.info_hash().v1);
 }
+
+// --- НАЧАЛО ИЗМЕНЕНИЯ: РЕАЛИЗАЦИЯ НОВОГО МЕТОДА ---
+lt::torrent_handle Download::get_handle()
+{
+    return m_th;
+}
+// --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 std::shared_ptr<std::vector<char>> Download::get_metadata(
     MetadataProgressCb cb)
@@ -524,23 +514,7 @@ void Download::download_metadata(MetadataProgressCb cb)
 
     auto f = dlprom.get_future();
     if (cb) cb(0.0);
-
-    // --- НАЧАЛО ИЗМЕНЕНИЯ ---
-    // Старый код: блокирующий цикл ожидания.
-    /*
-    while (!m_th.status().has_metadata) {
-        auto r = f.wait_for(std::chrono::seconds(1));
-        if (r == std::future_status::ready) {
-            f.get();
-            break;
-        }
-    }
-    */
-    // Новый код: используем `f.get()` который будет ждать, пока promise не будет выполнен.
-    // Это более чистый способ дождаться завершения асинхронной операции.
     f.get();
-    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
     if (cb) cb(100.0);
 }
 
@@ -558,22 +532,7 @@ void Download::download(lt::peer_request part, DataProgressCb cb)
 
     auto f = dlprom.get_future();
     if (cb) cb(0.0);
-    
-    // --- НАЧАЛО ИЗМЕНЕНИЯ ---
-    // Старый код: блокирующий цикл ожидания.
-    /*
-    while (!m_th.have_piece(part.piece)) {
-        auto r = f.wait_for(std::chrono::seconds(1));
-        if (r == std::future_status::ready) {
-            f.get();
-            break;
-        }
-    }
-    */
-    // Новый код: используем `f.get()` для ожидания завершения.
     f.get();
-    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
     if (cb) cb(100.0);
 }
 
@@ -581,27 +540,13 @@ ssize_t Download::read(lt::peer_request part, char* buf, size_t buflen)
 {
     D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
-    
-    // --- НАЧАЛО ИЗМЕНЕНИЯ ---
-    // Старый код: использование `torrent_handle::read_piece`, который является блокирующим.
-    /*
+
     ReadPiecePromise rdprom(m_th.info_hash(), part.piece);
     AlertSubscriber<ReadPiecePromise> sub(m_session, &rdprom);
     vlc_interrupt_guard<ReadPiecePromise> intrguard(rdprom);
 
     auto f = rdprom.get_future();
     m_th.read_piece(part.piece);
-    */
-    // Новый код: используем `async_read_piece` для асинхронного чтения, чтобы не блокировать поток.
-    // Однако, для простоты и сохранения остальной структуры, оставляем блокирующий вызов,
-    // но отмечаем, что это место для улучшения.
-    ReadPiecePromise rdprom(m_th.info_hash(), part.piece);
-    AlertSubscriber<ReadPiecePromise> sub(m_session, &rdprom);
-    vlc_interrupt_guard<ReadPiecePromise> intrguard(rdprom);
-    
-    m_th.read_piece(part.piece);
-    auto f = rdprom.get_future();
-    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     boost::shared_array<char> piece_buffer;
     int piece_size;
