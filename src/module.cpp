@@ -1,58 +1,69 @@
 /*
- * src/module.cpp
- *
- * This file is part of vlc-bittorrent.
- *
- * vlc-bittorrent is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * vlc-bittorrent is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with vlc-bittorrent. If not, see <http://www.gnu.org/licenses/>.
- */
-#include <vlc_common.h>
-#include <vlc_plugin.h>
-#include <vlc_stream.h>
-#include <vlc_url.h>
+Copyright 2016 Johan Gunnarsson <johan.gunnarsson@gmail.com>
 
-// Используем правильное определение из vlc.h
-#include "vlc.h" // Здесь уже определен DLDIR_CONFIG
+This file is part of vlc-bittorrent.
+
+vlc-bittorrent is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+vlc-bittorrent is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
+#include <vlc_plugin.h>
 
 #include "data.h"
-#include "metadata.h"
 #include "magnetmetadata.h"
+#include "metadata.h"
+#include "interface.h"
+
+// clang-format off
 
 vlc_module_begin()
-    set_shortname("BitTorrent")
-    set_description("BitTorrent access and stream input")
+    set_shortname("bittorrent")
     set_category(CAT_INPUT)
-    set_subcategory(SUBCAT_INPUT_ACCESS)
-    add_string(DLDIR_CONFIG, NULL, "Download directory", "Directory where files will be downloaded", false)
-    add_shortcut("bittorrent", "bt")
-    set_capability("access", 55) // выше, чем у file, но ниже, чем у http
-    set_callbacks(DataOpen, DataClose)
-    
-    // Добавляем отдельный модуль для метаданных
+    set_subcategory(SUBCAT_INPUT_STREAM_FILTER)
+    set_description("Bittorrent metadata access")
+    set_capability("stream_directory", 99)
+    set_callbacks(MetadataOpen, NULL)
+
+#if 1
+    add_directory(DLDIR_CONFIG, NULL, "Downloads",
+        "Directory where VLC will put downloaded files.", false)
+    add_bool(KEEP_CONFIG, false, "Don't delete files",
+        "Don't delete files after download.", true)
+#else
+    add_directory(DLDIR_CONFIG, NULL, "Downloads",
+        "Directory where VLC will put downloaded files.")
+    add_bool(KEEP_CONFIG, false, "Don't delete files",
+        "Don't delete files after download.")
+#endif
+
     add_submodule()
-        set_shortname("BitTorrent Meta")
-        set_description("BitTorrent metadata reader")
-        set_category(CAT_META)
-        set_subcategory(SUBCAT_META_READER)
-        set_capability("meta reader", 10)
-        set_callbacks(MetadataOpen, MetadataClose) // Исправлено: MetadataOpen вместо MetadataRead
-    
-    // Добавляем отдельный модуль для магнитных ссылок
+        set_description("Bittorrent data access")
+        set_capability("stream_extractor", 99)
+        set_callbacks(DataOpen, DataClose)
+
     add_submodule()
-        set_shortname("Magnet Meta")
-        set_description("Magnet link metadata reader")
-        set_category(CAT_META)
-        set_subcategory(SUBCAT_META_READER)
-        set_capability("meta reader", 10)
-        set_callbacks(MagnetMetadataOpen, MagnetMetadataClose) // Исправлено: MagnetMetadataOpen вместо MagnetMetadataRead
+        set_description("Bittorrent magnet metadata access")
+        set_capability("access", 60)
+        add_shortcut("file", "magnet")
+        set_callbacks(MagnetMetadataOpen, MagnetMetadataClose)
+
+    add_submodule()
+        set_description("Bittorrent Status Updater")
+        set_capability("interface", 0)
+        set_callbacks(InterfaceOpen, InterfaceClose)
+
 vlc_module_end()
