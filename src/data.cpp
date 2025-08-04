@@ -24,6 +24,7 @@
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_stream.h>
+#include <vlc_input.h>
 #include <vlc_variables.h>
 
 #include "data.h"
@@ -79,40 +80,29 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
     msg_Dbg(p_extractor, "Seek requested to position %" PRIu64, i_pos);
 
-    // ШАГ 1: Сначала сбрасываем внутренние часы VLC
-    // Это КРИТИЧЕСКИ важно для MKV и других контейнеров
-    if (vlc_stream_Control(p_extractor->source, STREAM_RESET_PCR)) {
-        msg_Warn(p_extractor, "Failed to reset PCR clock, continuing anyway");
-    }
-
-    // ШАГ 2: Сообщаем нижележащему потоку VLC о перемотке
+    // ШАГ 1: Сообщаем нижележащему потоку VLC о перемотке
     if (vlc_stream_Seek(p_extractor->source, i_pos)) {
         msg_Err(p_extractor, "Underlying stream seek failed");
         return VLC_EGENERIC;
     }
 
-    // ШАГ 3: ДОПОЛНИТЕЛЬНЫЙ СБРОС - устанавливаем позицию явно
-    uint64_t new_pos;
-    if (vlc_stream_Control(p_extractor->source, STREAM_GET_POSITION, &new_pos)) {
-        msg_Err(p_extractor, "Failed to get position after seek");
-        return VLC_EGENERIC;
-    }
-    if (new_pos != i_pos) {
-        msg_Warn(p_extractor, "Position mismatch after seek: expected %" PRIu64 ", got %" PRIu64, i_pos, new_pos);
-        if (vlc_stream_Seek(p_extractor->source, i_pos)) {
-            msg_Err(p_extractor, "Second seek attempt failed");
-            return VLC_EGENERIC;
-        }
-    }
-
-    // ШАГ 4: Обновляем нашу внутреннюю позицию
+    // ШАГ 2: Обновляем нашу внутреннюю позицию
     s->i_pos = i_pos;
 
-    // ШАГ 5: Приказываем libtorrent немедленно скачать данные
+    // ШАГ 3: Устанавливаем приоритет загрузки
     if (s->p_download) {
         msg_Dbg(p_extractor, "Setting piece priority for seeking");
-        // Увеличиваем размер до 50 MB для более быстрой буферизации после перемотки
+        // Увеличиваем размер до 50 MB для лучшей буферизации
         s->p_download->set_piece_priority(s->i_file, (int64_t)s->i_pos, 50 * 1024 * 1024, 7);
+    }
+
+    // ШАГ 4: СБРОС ВНУТРЕННИХ ЧАСОВ VLC ЧЕРЕЗ СКРЫТЫЙ МЕХАНИЗМ
+    // Это ключевой момент - мы устанавливаем флаг "need_start" в input
+    input_thread_t* p_input = vlc_object_find(p_extractor, VLC_OBJECT_INPUT, FIND_PARENT);
+    if (p_input) {
+        msg_Dbg(p_extractor, "Resetting input clock after seek");
+        var_SetBool(p_input, "input-restart", true);
+        vlc_object_release(p_input);
     }
 
     return VLC_SUCCESS;
