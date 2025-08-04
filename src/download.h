@@ -91,9 +91,10 @@ public:
     std::string
     get_infohash();
     
-    // --- НАЧАЛО ИЗМЕНЕНИЯ: ДОБАВЛЕН МЕТОД ---
-    // Возвращает handle для этого торрента.
     lt::torrent_handle get_handle();
+
+    // --- НАЧАЛО ИЗМЕНЕНИЯ: НОВАЯ ФУНКЦИЯ ДЛЯ ПЕРЕМОТКИ ---
+    void set_piece_priority(int file, int64_t off, int size, int priority);
     // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 private:
@@ -121,6 +122,7 @@ private:
     ssize_t
     read(lt::peer_request part, char* buf, size_t buflen);
 
+    // Старая функция остается приватной
     void
     set_piece_priority(int file, int64_t off, int size, libtorrent::download_priority_t prio);
 
