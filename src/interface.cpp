@@ -53,7 +53,7 @@ void InterfaceClose(vlc_object_t* p_obj) {
 static void* Run(void* data) {
     intf_thread_t* p_intf = (intf_thread_t*)data;
     intf_sys_t* p_sys = (intf_sys_t*)p_intf->p_sys;
-    char* original_title = NULL;
+    char* original_name = NULL;
     input_item_t* last_item = NULL;
 
     while (!p_sys->thread_killed) {
@@ -64,13 +64,11 @@ static void* Run(void* data) {
         
         input_thread_t* p_input = playlist_CurrentInput(p_playlist);
         if (!p_input) {
-            // Если ничего не играет, сбрасываем сохраненный заголовок
-            if (original_title) {
-                if (last_item) {
-                    input_item_SetMeta(last_item, vlc_meta_Title, original_title);
-                }
-                free(original_title);
-                original_title = NULL;
+            // Если ничего не играет, восстанавливаем оригинальное имя
+            if (original_name && last_item) {
+                input_item_SetName(last_item, original_name);
+                free(original_name);
+                original_name = NULL;
                 last_item = NULL;
             }
             continue;
@@ -82,53 +80,36 @@ static void* Run(void* data) {
             continue;
         }
 
-        // Если элемент сменился, восстанавливаем заголовок предыдущего и сбрасываем состояние
+        // Если элемент сменился, сохраняем оригинальное имя
         if (p_item != last_item) {
-            if (original_title && last_item) {
-                input_item_SetMeta(last_item, vlc_meta_Title, original_title);
-                free(original_title);
+            if (original_name) {
+                free(original_name);
+                original_name = NULL;
             }
-            if (original_title) free(original_title);
-            original_title = NULL;
             last_item = p_item;
+            original_name = strdup(input_item_GetName(p_item));
         }
 
-        // Переменная "bittorrent-status-string" устанавливается на объекте input_thread.
-        // Читаем ее прямо из этого объекта.
+        // Читаем статус торрента
         char* status_str = var_GetString(VLC_OBJECT(p_input), "bittorrent-status-string");
         
         if (status_str && strlen(status_str) > 0) {
-            // Если статус есть, сохраняем оригинальный заголовок (если еще не сохранили)
-            if (!original_title) {
-                original_title = input_item_GetMeta(p_item, vlc_meta_Title);
-                if (!original_title) {
-                    // На случай, если метаданных нет, используем имя файла
-                    original_title = strdup(p_item->psz_name ? p_item->psz_name : "");
-                }
-            }
-            
-            // Формируем новую строку и обновляем метаданные
-            std::string final_title = std::string(original_title) + " " + std::string(status_str);
-            input_item_SetMeta(p_item, vlc_meta_Title, final_title.c_str());
-            // input_item_SendEventMeta не нужен в современных версиях VLC
-        } else {
-             // Если статусная строка пуста (например, загрузка завершилась),
-             // восстанавливаем оригинальный заголовок
-             if (original_title) {
-                input_item_SetMeta(p_item, vlc_meta_Title, original_title);
-                free(original_title);
-                original_title = NULL;
-             }
+            // Формируем новое имя
+            std::string final_name = std::string(original_name) + " " + std::string(status_str);
+            input_item_SetName(p_item, final_name.c_str());
+        } else if (original_name) {
+            // Восстанавливаем оригинальное имя
+            input_item_SetName(p_item, original_name);
         }
         
         if (status_str) free(status_str);
         vlc_object_release(p_input);
     }
     
-    // При выходе из потока, если остался измененный заголовок, восстанавливаем его
-    if (original_title && last_item) {
-        input_item_SetMeta(last_item, vlc_meta_Title, original_title);
-        free(original_title);
+    // При выходе восстанавливаем оригинальное имя
+    if (original_name && last_item) {
+        input_item_SetName(last_item, original_name);
+        free(original_name);
     }
     
     return NULL;
