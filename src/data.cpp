@@ -3,7 +3,7 @@
  *
  * Этот модуль реализует логику потока данных (stream_extractor) для VLC.
  * Его задача - получать данные от libtorrent и публиковать строку статуса
- * в глобальную переменную VLC "bittorrent-status-string" для другого плагина.
+ * в переменную "bittorrent-status-string" для другого плагина.
  */
 #ifdef HAVE_CONFIG_H
 # include "config.h"
@@ -17,6 +17,9 @@
 #include <vlc_plugin.h>
 #include <vlc_stream.h>
 #include <vlc_variables.h>
+// Убираем ненужные заголовки, которые вызывают проблемы
+// #include <vlc_interface.h> // Не нужно в stream_extractor
+// #include <vlc_playlist.h>  // Не нужно в stream_extractor
 #include <libtorrent/alert.hpp>
 #include <libtorrent/alert_types.hpp>
 #include "data.h"
@@ -34,11 +37,8 @@ public:
     ~VLCMetadataUpdater() override = default;
     void handle_alert(lt::alert* a) override {
         if (lt::alert_cast<lt::metadata_received_alert>(a)) {
-            // Устанавливаем переменную на playlist
-            playlist_t* p_playlist = pl_Get(m_input);
-            if (p_playlist) {
-                var_SetString(VLC_OBJECT(p_playlist), "bittorrent-status-string", "Metadata OK, starting download...");
-            }
+            // Устанавливаем переменную прямо на объекте input
+            var_SetString(m_input, "bittorrent-status-string", "Metadata OK, starting download...");
         } else if (auto* dht = lt::alert_cast<lt::dht_stats_alert>(a)) {
             int total_nodes = 0;
             for(const auto& bucket : dht->routing_table) {
@@ -48,7 +48,7 @@ public:
         }
     }
 private:
-    vlc_object_t* m_input;
+    vlc_object_t* m_input; // input_thread_t*
 };
 
 // Класс-слушатель для регулярного обновления строки статуса (скорость, пиры и т.д.)
@@ -67,15 +67,12 @@ public:
                 << "DHT: " << g_dht_nodes.load() << " | "
                 << "Progress: " << static_cast<int>(st.progress * 100) << "% ]";
             
-            // Устанавливаем переменную на playlist
-            playlist_t* p_playlist = pl_Get(m_input);
-            if (p_playlist) {
-                var_SetString(VLC_OBJECT(p_playlist), "bittorrent-status-string", oss.str().c_str());
-            }
+            // Устанавливаем переменную прямо на объекте input
+            var_SetString(m_input, "bittorrent-status-string", oss.str().c_str());
         }
     }
 private:
-    vlc_object_t* m_input;
+    vlc_object_t* m_input; // input_thread_t*
 };
 
 // Системная структура для хранения состояния stream_extractor
@@ -155,12 +152,10 @@ int DataOpen(vlc_object_t* p_obj) {
     p_extractor->pf_seek = DataSeek;
     p_extractor->pf_control = DataControl;
     
-    // Создаем глобальную переменную для хранения статуса на playlist
-    playlist_t* p_playlist = pl_Get(p_obj);
-    if (p_playlist) {
-        var_Create(VLC_OBJECT(p_playlist), "bittorrent-status-string", VLC_VAR_STRING);
-        var_SetString(VLC_OBJECT(p_playlist), "bittorrent-status-string", ""); // Инициализируем пустой строкой
-    }
+    // Создаем переменную для хранения статуса прямо на объекте stream_extractor
+    var_Create(p_obj, "bittorrent-status-string", VLC_VAR_STRING);
+    // Инициализируем пустой строкой
+    var_SetString(p_obj, "bittorrent-status-string", "");
 
     s->p_meta_listener = new VLCMetadataUpdater(p_obj);
     Session::get()->register_alert_listener(s->p_meta_listener);
@@ -176,11 +171,8 @@ void DataClose(vlc_object_t* p_obj) {
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
     if (!s) return;
     
-    // Очищаем глобальную переменную статуса
-    playlist_t* p_playlist = pl_Get(p_obj);
-    if (p_playlist) {
-        var_SetString(VLC_OBJECT(p_playlist), "bittorrent-status-string", "");
-    }
+    // Очищаем переменную
+    var_SetString(p_obj, "bittorrent-status-string", "");
     
     if (s->p_meta_listener) {
         Session::get()->unregister_alert_listener(s->p_meta_listener);
