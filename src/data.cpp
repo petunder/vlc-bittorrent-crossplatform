@@ -64,32 +64,48 @@ static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_s
     }
 }
 
-// --- НАЧАЛО ИЗМЕНЕНИЯ: ПОЛНАЯ И ПРАВИЛЬНАЯ РЕАЛИЗАЦИЯ ПЕРЕМОТКИ ---
 static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
     msg_Dbg(p_extractor, "Seek requested to position %" PRIu64, i_pos);
 
-    // ШАГ 1: Сообщаем нижележащему потоку VLC о перемотке.
-    // Это ключевой вызов, который сбрасывает часы (reference clock) и буферы.
+    // ШАГ 1: Сначала сбрасываем внутренние часы VLC
+    // Это КРИТИЧЕСКИ важно для MKV и других контейнеров
+    if (vlc_stream_Control(p_extractor->source, STREAM_RESET_PCR)) {
+        msg_Warn(p_extractor, "Failed to reset PCR clock, continuing anyway");
+    }
+
+    // ШАГ 2: Сообщаем нижележащему потоку VLC о перемотке
     if (vlc_stream_Seek(p_extractor->source, i_pos)) {
         msg_Err(p_extractor, "Underlying stream seek failed");
         return VLC_EGENERIC;
     }
 
-    // ШАГ 2: Обновляем нашу внутреннюю позицию.
+    // ШАГ 3: ДОПОЛНИТЕЛЬНЫЙ СБРОС - устанавливаем позицию явно
+    uint64_t new_pos;
+    if (vlc_stream_Control(p_extractor->source, STREAM_GET_POSITION, &new_pos)) {
+        msg_Err(p_extractor, "Failed to get position after seek");
+        return VLC_EGENERIC;
+    }
+    if (new_pos != i_pos) {
+        msg_Warn(p_extractor, "Position mismatch after seek: expected %" PRIu64 ", got %" PRIu64, i_pos, new_pos);
+        if (vlc_stream_Seek(p_extractor->source, i_pos)) {
+            msg_Err(p_extractor, "Second seek attempt failed");
+            return VLC_EGENERIC;
+        }
+    }
+
+    // ШАГ 4: Обновляем нашу внутреннюю позицию
     s->i_pos = i_pos;
 
-    // ШАГ 3 (Оптимизация): Приказываем libtorrent немедленно скачать
-    // данные с нового места с наивысшим приоритетом.
+    // ШАГ 5: Приказываем libtorrent немедленно скачать данные
     if (s->p_download) {
         msg_Dbg(p_extractor, "Setting piece priority for seeking");
-        // Увеличиваем размер предзагрузки для лучшей отзывчивости при перемотке
-        s->p_download->set_piece_priority(s->i_file, (int64_t)s->i_pos, 20 * 1024 * 1024, 7); // 20 MB, prio 7
+        // Увеличиваем размер до 50 MB для более быстрой буферизации после перемотки
+        s->p_download->set_piece_priority(s->i_file, (int64_t)s->i_pos, 50 * 1024 * 1024, 7);
     }
 
     return VLC_SUCCESS;
 }
-// --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list args) {
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
