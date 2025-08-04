@@ -48,6 +48,7 @@ along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
 #include <vlc_threads.h>
 #include <vlc_url.h>
 #include <vlc_variables.h>
+#include <vlc_objects.h>
 #pragma GCC diagnostic pop
 
 #define DLDIR_CONFIG "bittorrent-download-path"
