@@ -16,8 +16,12 @@
 #include <libtorrent/alert.hpp>
 #include <libtorrent/session.hpp>
 #include <libtorrent/alert_types.hpp>
-#include <libtorrent/torrent_status.hpp>
-#include <libtorrent/read_session_params.hpp>
+#include <libtorrent/torrent_status.hpp> // Для lt::torrent_status
+// --- НАЧАЛО ИЗМЕНЕНИЯ ---
+// ОШИБКА: Этот заголовок (и API) относится к libtorrent 2.0.x, тогда как проект,
+// вероятно, использует 1.x.
+// #include <libtorrent/read_session_params.hpp>
+// --- КОНЕЦ ИЗМЕНЕНИЯ ---
 #include <chrono>
 #include <vector>
 #include <sstream>
@@ -95,7 +99,6 @@ void Session::remove_torrent(lt::torrent_handle& th, bool keep)
         m_session->remove_torrent(th, lt::session::delete_files);
 }
 
-// --- НАЧАЛО ИЗМЕНЕНИЯ: РЕАЛИЗАЦИЯ НОВЫХ МЕТОДОВ ---
 void Session::set_active_torrent(lt::torrent_handle th) {
     if (th.is_valid()) {
         m_active_torrent_hash = th.info_hash();
@@ -110,13 +113,18 @@ std::string Session::get_active_status_string() {
     std::lock_guard<std::mutex> lock(m_status_mutex);
     return m_status_string;
 }
-// --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 void Session::session_thread()
 {
     while (!m_quit) {
         m_session->wait_for_alert(std::chrono::seconds(1));
         if (m_quit) break;
+
+        // --- НАЧАЛО ИЗМЕНЕНИЯ ---
+        // Запрашиваем актуальный статус торрентов и DHT
+        m_session->post_torrent_updates();
+        m_session->post_dht_stats();
+        // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         std::vector<lt::alert*> alerts;
         m_session->pop_alerts(&alerts);
@@ -131,7 +139,6 @@ void Session::session_thread()
             }
         }
         
-        // --- НАЧАЛО ИЗМЕНЕНИЯ: ГЕНЕРАЦИЯ СТАТУСА ---
         lt::sha1_hash active_hash = m_active_torrent_hash.load();
         std::string new_status_string = "";
 
@@ -156,7 +163,6 @@ void Session::session_thread()
             std::lock_guard<std::mutex> lock(m_status_mutex);
             m_status_string = new_status_string;
         }
-        // --- КОНЕЦ ИЗМЕНЕНИЯ ---
     }
 }
 
