@@ -21,11 +21,12 @@
 #include <vlc_stream.h>
 #include <vlc_url.h>
 
+// Используем правильное определение из vlc.h
+#include "vlc.h" // Здесь уже определен DLDIR_CONFIG
+
 #include "data.h"
 #include "metadata.h"
 #include "magnetmetadata.h"
-
-#define DLDIR_CONFIG "bittorrent-downloads"
 
 vlc_module_begin()
     set_shortname("BitTorrent")
@@ -44,7 +45,7 @@ vlc_module_begin()
         set_category(CAT_META)
         set_subcategory(SUBCAT_META_READER)
         set_capability("meta reader", 10)
-        set_callbacks(MetadataRead, NULL)
+        set_callbacks(MetadataOpen, MetadataClose) // Исправлено: MetadataOpen вместо MetadataRead
     
     // Добавляем отдельный модуль для магнитных ссылок
     add_submodule()
@@ -53,5 +54,5 @@ vlc_module_begin()
         set_category(CAT_META)
         set_subcategory(SUBCAT_META_READER)
         set_capability("meta reader", 10)
-        set_callbacks(MagnetMetadataRead, NULL)
+        set_callbacks(MagnetMetadataOpen, MagnetMetadataClose) // Исправлено: MagnetMetadataOpen вместо MagnetMetadataRead
 vlc_module_end()
