@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
 
-git clone --depth 1 -b "${1:-RC_2_0}" https://github.com/arvidn/libtorrent.git &&
+git clone --depth 1 -b "${1:-master}" https://github.com/arvidn/libtorrent.git &&
 cd libtorrent &&
 ./autotool.sh &&
 ./configure --prefix="${2:-/tmp}" \
