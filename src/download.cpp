@@ -19,7 +19,7 @@
  *     - Реализация функции `read()`, которая позволяет VLC-плагину запрашивать фрагменты (piece) файла.
  *     - Управление приоритетами загрузки частей файла для обеспечения плавного воспроизведения.
  *
- * 4.  **Взаимодействие с libtorrent:**
+ * 4.  **Взаимодействие с libtorrent 1.2.x:**
  *     - Добавление торрентов в сессию `libtorrent::session`.
  *     - Использование `Alert_Listener` для асинхронной обработки событий от libtorrent (например, окончание загрузки куска, получение метаданных).
  *
@@ -51,7 +51,7 @@
 #include <libtorrent/alert.hpp>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/create_torrent.hpp>
-#include <libtorrent/hex.hpp>
+#include <libtorrent/hex.hpp> // Для lt::to_hex
 #include <libtorrent/magnet_uri.hpp>
 #include <libtorrent/peer_request.hpp>
 #include <libtorrent/session.hpp>
@@ -479,15 +479,18 @@ std::string Download::get_infohash()
     D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
     
-    return lt::to_hex(m_th.info_hash().v1);
+    // --- НАЧАЛО ИЗМЕНЕНИЯ ---
+    // ОШИБКА: .v1 - это для libtorrent 2.0.x. Для 1.x info_hash() возвращает sha1_hash напрямую.
+    // return lt::to_hex(m_th.info_hash().v1);
+    // НОВЫЙ КОД: Для libtorrent 1.x используем to_string() напрямую.
+    return m_th.info_hash().to_string();
+    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 }
 
-// --- НАЧАЛО ИЗМЕНЕНИЯ: РЕАЛИЗАЦИЯ НОВОГО МЕТОДА ---
 lt::torrent_handle Download::get_handle()
 {
     return m_th;
 }
-// --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 std::shared_ptr<std::vector<char>> Download::get_metadata(
     MetadataProgressCb cb)
