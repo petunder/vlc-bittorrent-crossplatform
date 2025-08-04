@@ -29,6 +29,7 @@
 #include <atomic>
 #include <string>
 #include <sstream>
+#include <map>
 #include <vlc_interface.h>
 #include <vlc_playlist.h>
 #include <vlc_input.h>
@@ -37,8 +38,10 @@
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/sha1_hash.hpp>
 #include <libtorrent/torrent_status.hpp>
+// --- НАЧАЛО ИЗМЕНЕНИЯ: ДОБАВЛЕН НУЖНЫЙ ЗАГОЛОВОК ---
+#include <libtorrent/hex.hpp>
+// --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
-// --- НАЧАЛО ИЗМЕНЕНИЯ: ЛОГИКА СТАТУСА ПЕРЕЕХАЛА СЮДА ---
 class VLCStatusUpdater : public Alert_Listener {
 public:
     VLCStatusUpdater() : m_dht_nodes(0) {}
@@ -54,7 +57,17 @@ public:
                     << "Peers: " << st.num_peers << " (" << st.list_seeds << ") | "
                     << "DHT: " << m_dht_nodes << " | "
                     << "Progress: " << static_cast<int>(st.progress * 100) << "% ]";
-                m_status_map[st.info_hash] = oss.str();
+
+                // --- НАЧАЛО ИЗМЕНЕНИЯ: ИСПОЛЬЗУЕМ СОВРЕМЕННОЕ API ---
+                // Старый код использовал st.info_hash, который является deprecated.
+                // m_status_map[st.info_hash] = oss.str();
+                // Новый код использует info_hashes.v1 для явного указания на SHA1-хеш.
+                #if LIBTORRENT_VERSION_NUM >= 10200
+                    m_status_map[st.info_hashes.v1] = oss.str();
+                #else
+                    m_status_map[st.info_hash] = oss.str();
+                #endif
+                // --- КОНЕЦ ИЗМЕНЕНИЯ ---
             }
         } else if (auto* dht = lt::alert_cast<lt::dht_stats_alert>(a)) {
             int total_nodes = 0;
@@ -79,7 +92,6 @@ private:
     std::map<lt::sha1_hash, std::string> m_status_map;
     std::atomic<int> m_dht_nodes;
 };
-// --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 struct intf_sys_t {
     vlc_thread_t thread;
@@ -170,11 +182,17 @@ static void* Run(void* data) {
             p_sys->last_item = p_item;
 
             char* hash_str = var_GetString(p_input, "bittorrent-active-hash");
-            if(hash_str) {
-                lt::from_hex(hash_str, 20, (char*)&active_hash[0]);
+            if(hash_str && strlen(hash_str) == 40) {
+                // --- НАЧАЛО ИЗМЕНЕНИЯ: ИСПРАВЛЕН ВЫЗОВ from_hex ---
+                // Старый код вызывал несуществующую функцию.
+                // lt::from_hex(hash_str, 20, (char*)&active_hash[0]);
+                // Новый код использует правильную функцию и правильную длину (40 символов).
+                lt::from_hex(hash_str, (char*)active_hash.data());
+                // --- КОНЕЦ ИЗМЕНЕНИЯ ---
                 free(hash_str);
             } else {
                 active_hash.clear();
+                if(hash_str) free(hash_str);
             }
         }
 
