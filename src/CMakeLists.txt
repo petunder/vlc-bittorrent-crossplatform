@@ -32,7 +32,6 @@ else()
 endif()
 # --- Конец патча для Windows ---
 
-# Создаем access-плагин для обработки торрентов
 add_library(
     access_bittorrent_plugin
     MODULE
@@ -43,17 +42,10 @@ add_library(
         download.cpp
         session.cpp
         vlc.cpp
-        # УДАЛЕН interface.cpp из этого плагина
+        interface.cpp
 )
 
-# Создаем интерфейсный плагин для статус бара
-add_library(
-    intf_torrentstatus_plugin
-    MODULE
-        interface.cpp  # ТОЛЬКО interface.cpp в этом плагине
-)
-
-# --- линковка для access-плагина ---
+# линковка
 if (WIN32)
     target_include_directories(
         access_bittorrent_plugin
@@ -68,34 +60,13 @@ if (WIN32)
             LibtorrentRasterbar::torrent-rasterbar
     )
     # Указываем правильное расширение для Windows
-    set_target_properties(access_bittorrent_plugin PROPERTIES SUFFIX ".so")
+    set_target_properties(access_bittorrent_plugin PROPERTIES SUFFIX ".dll")
 else()
     target_link_libraries(
         access_bittorrent_plugin
         PUBLIC
             PkgConfig::VlcPlugin
             PkgConfig::LibtorrentRasterbar
-    )
-endif()
-
-# --- линковка для интерфейсного плагина ---
-if (WIN32)
-    target_include_directories(
-        intf_torrentstatus_plugin
-        PRIVATE
-            ${VLC_INCLUDE_DIRS}
-    )
-    target_link_libraries(
-        intf_torrentstatus_plugin
-        PRIVATE
-            ${VLC_LIBRARIES}
-    )
-    set_target_properties(intf_torrentstatus_plugin PROPERTIES SUFFIX ".so")
-else()
-    target_link_libraries(
-        intf_torrentstatus_plugin
-        PUBLIC
-            PkgConfig::VlcPlugin
     )
 endif()
 
@@ -110,8 +81,7 @@ execute_process(
 if (VLC_PATH MATCHES "/snap/")
     # -------- snap -------------
     set(VLC_IS_SNAP TRUE)
-    set(ACCESS_PLUGIN_DIR "$ENV{HOME}/.local/lib/vlc/plugins/access")
-    set(INTF_PLUGIN_DIR "$ENV{HOME}/.local/lib/vlc/plugins/intf")
+    set(VLC_PLUGIN_DIR "$ENV{HOME}/.local/lib/vlc/plugins/access")
 else ()
     # -------- classic ----------
     execute_process(
@@ -123,33 +93,25 @@ else ()
         # fallback для странных дистрибутивов
         set(VLC_BASE "/usr/lib/vlc/plugins")
     endif()
-    set(ACCESS_PLUGIN_DIR "${VLC_BASE}/access")
-    set(INTF_PLUGIN_DIR "${VLC_BASE}/intf")
+    set(VLC_PLUGIN_DIR "${VLC_BASE}/access")
 endif()
 
 # --- install target -----------------------------------------------------
 install(
     TARGETS access_bittorrent_plugin
-    LIBRARY DESTINATION ${ACCESS_PLUGIN_DIR}
-)
-
-install(
-    TARGETS intf_torrentstatus_plugin
-    LIBRARY DESTINATION ${INTF_PLUGIN_DIR}
+    LIBRARY DESTINATION ${VLC_PLUGIN_DIR}
 )
 
 # --- post-install script ------------------------------------------------
 install(CODE "
-    execute_process(COMMAND ${CMAKE_COMMAND} -E make_directory ${ACCESS_PLUGIN_DIR})
-    execute_process(COMMAND ${CMAKE_COMMAND} -E make_directory ${INTF_PLUGIN_DIR})
-    
+    execute_process(COMMAND ${CMAKE_COMMAND} -E make_directory ${VLC_PLUGIN_DIR})
     if (\"${VLC_IS_SNAP}\")
-        message(STATUS \"VLC snap detected → plugins copied to ${ACCESS_PLUGIN_DIR} and ${INTF_PLUGIN_DIR}\")
+        message(STATUS \"VLC snap detected → plugin copied to ${VLC_PLUGIN_DIR}\")
         file(APPEND \$ENV{HOME}/.profile
-             \"\\n# added by vlc-bittorrent\\nexport VLC_PLUGIN_PATH=${ACCESS_PLUGIN_DIR}:${INTF_PLUGIN_DIR}:\$VLC_PLUGIN_PATH\\n\")
+             \"\\n# added by vlc-bittorrent\\nexport VLC_PLUGIN_PATH=${VLC_PLUGIN_DIR}:\$VLC_PLUGIN_PATH\\n\")
         message(STATUS \"Added VLC_PLUGIN_PATH to ~/.profile\")
     else ()
-        message(STATUS \"Classic VLC → plugins copied to ${ACCESS_PLUGIN_DIR} and ${INTF_PLUGIN_DIR}\")
+        message(STATUS \"Classic VLC → plugin copied to ${VLC_PLUGIN_DIR}\")
         execute_process(
             COMMAND vlc-cache-gen ${VLC_BASE}
             RESULT_VARIABLE IGNORE ERROR_QUIET
@@ -162,7 +124,6 @@ target_include_directories(
     access_bittorrent_plugin
     PRIVATE
         ${CMAKE_BINARY_DIR}
-        ${CMAKE_SOURCE_DIR}/src
 )
 
 target_compile_definitions(
@@ -181,30 +142,6 @@ target_compile_features(
 
 set_target_properties(
     access_bittorrent_plugin
-    PROPERTIES
-        CXX_STANDARD 14
-        CXX_STANDARD_REQUIRED YES
-        CXX_VISIBILITY_PRESET hidden
-)
-
-# Дополнительные настройки для интерфейсного плагина
-target_include_directories(
-    intf_torrentstatus_plugin
-    PRIVATE
-        ${CMAKE_BINARY_DIR}
-        ${CMAKE_SOURCE_DIR}/src
-)
-
-target_compile_definitions(
-    intf_torrentstatus_plugin
-    PRIVATE
-        -DMODULE_STRING=\"torrentstatus\"
-        -D__PLUGIN__
-        -DPACKAGE=\"vlc-torrentstatus\"
-)
-
-set_target_properties(
-    intf_torrentstatus_plugin
     PROPERTIES
         CXX_STANDARD 14
         CXX_STANDARD_REQUIRED YES
