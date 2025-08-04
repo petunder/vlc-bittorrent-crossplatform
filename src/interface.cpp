@@ -2,8 +2,8 @@
  * src/interface.cpp
  *
  * Этот модуль является интерфейсным плагином (`intf`).
- * Его единственная задача - работать в фоновом потоке, читать глобальную
- * переменную VLC "bittorrent-status-string" и обновлять заголовок (метаданные)
+ * Его единственная задача - работать в фоновом потоке, читать переменную
+ * "bittorrent-status-string" с объекта input_thread и обновлять метаданные
  * проигрываемого файла, чтобы отображать статус загрузки.
  */
 #ifdef HAVE_CONFIG_H
@@ -53,7 +53,6 @@ void InterfaceClose(vlc_object_t* p_obj) {
 static void* Run(void* data) {
     intf_thread_t* p_intf = (intf_thread_t*)data;
     intf_sys_t* p_sys = (intf_sys_t*)p_intf->p_sys;
-    
     char* original_title = NULL;
     input_item_t* last_item = NULL;
 
@@ -65,9 +64,11 @@ static void* Run(void* data) {
         
         input_thread_t* p_input = playlist_CurrentInput(p_playlist);
         if (!p_input) {
-            // Ничего не играет, восстанавливаем заголовок последнего элемента
-            if (original_title && last_item) {
-                input_item_SetMeta(last_item, vlc_meta_Title, original_title);
+            // Если ничего не играет, сбрасываем сохраненный заголовок
+            if (original_title) {
+                if (last_item) {
+                    input_item_SetMeta(last_item, vlc_meta_Title, original_title);
+                }
                 free(original_title);
                 original_title = NULL;
                 last_item = NULL;
@@ -81,7 +82,7 @@ static void* Run(void* data) {
             continue;
         }
 
-        // Если медиа-элемент сменился, сбрасываем состояние
+        // Если элемент сменился, восстанавливаем заголовок предыдущего и сбрасываем состояние
         if (p_item != last_item) {
             if (original_title && last_item) {
                 input_item_SetMeta(last_item, vlc_meta_Title, original_title);
@@ -92,23 +93,27 @@ static void* Run(void* data) {
             last_item = p_item;
         }
 
-        // Читаем глобальную переменную статуса с объекта playlist
-        char* status_str = var_GetString(VLC_OBJECT(p_playlist), "bittorrent-status-string");
+        // Переменная "bittorrent-status-string" устанавливается на объекте input_thread.
+        // Читаем ее прямо из этого объекта.
+        char* status_str = var_GetString(VLC_OBJECT(p_input), "bittorrent-status-string");
         
         if (status_str && strlen(status_str) > 0) {
-            // Если статус есть, сохраняем оригинальный заголовок (если еще не сделали)
+            // Если статус есть, сохраняем оригинальный заголовок (если еще не сохранили)
             if (!original_title) {
                 original_title = input_item_GetMeta(p_item, vlc_meta_Title);
-                if (!original_title) 
+                if (!original_title) {
+                    // На случай, если метаданных нет, используем имя файла
                     original_title = strdup(p_item->psz_name ? p_item->psz_name : "");
+                }
             }
             
             // Формируем новую строку и обновляем метаданные
-            std::string final_title = std::string(original_title ? original_title : "") + " " + std::string(status_str);
+            std::string final_title = std::string(original_title) + " " + std::string(status_str);
             input_item_SetMeta(p_item, vlc_meta_Title, final_title.c_str());
-            // input_item_SendEventMeta не нужен, VLC обновит GUI автоматически
+            // input_item_SendEventMeta не нужен в современных версиях VLC
         } else {
-             // Если статусная строка пуста, восстанавливаем оригинальный заголовок
+             // Если статусная строка пуста (например, загрузка завершилась),
+             // восстанавливаем оригинальный заголовок
              if (original_title) {
                 input_item_SetMeta(p_item, vlc_meta_Title, original_title);
                 free(original_title);
@@ -120,7 +125,7 @@ static void* Run(void* data) {
         vlc_object_release(p_input);
     }
     
-    // При выходе из потока, восстанавливаем оригинальный заголовок
+    // При выходе из потока, если остался измененный заголовок, восстанавливаем его
     if (original_title && last_item) {
         input_item_SetMeta(last_item, vlc_meta_Title, original_title);
         free(original_title);
