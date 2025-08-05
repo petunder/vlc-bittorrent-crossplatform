@@ -33,12 +33,10 @@
 
 static input_thread_t *FindInput(stream_extractor_t *se)
 {
-    vlc_object_t *obj = VLC_OBJECT(se);
-    while (obj != nullptr)
+    for (vlc_object_t *o = VLC_OBJECT(se); o; o = vlc_object_parent(o))
     {
-        if (obj->i_object_type == VLC_OBJECT_INPUT)
-            return (input_thread_t *)obj;
-        obj = obj->parent;
+        if (vlc_object_inherits(o, "input"))
+            return (input_thread_t *)o;
     }
     return nullptr;
 }
