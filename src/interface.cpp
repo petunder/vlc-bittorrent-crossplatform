@@ -162,52 +162,62 @@ static void* Run(void* data) {
             vlc_object_release(p_playlist);
             continue;
         }
-
+        // --- НАЧАЛО ИЗМЕНЕНИЯ ---
         input_item_t* p_item = input_GetItem(p_input);
         if (!p_item) {
             vlc_object_release(p_input);
             vlc_object_release(p_playlist);
             continue;
         }
-
+        
         if (p_item != p_sys->last_item) {
             if (p_sys->original_name) free(p_sys->original_name);
             p_sys->original_name = input_item_GetName(p_item);
             p_sys->last_item = p_item;
-
+        
             char* hash_str = var_GetString(p_input, "bittorrent-active-hash");
             if(hash_str && strlen(hash_str) == 40) {
-                // --- НАЧАЛО ИЗМЕНЕНИЯ: ИСПРАВЛЕН ВЫЗОВ from_hex ---
-                // Старый код: lt::from_hex(hash_str, (char*)active_hash.data()); (неверные аргументы)
-                // Новый код передает все 3 необходимых аргумента: hex-строку, ее длину (40)
-                // и указатель на выходной буфер.
                 lt::from_hex(hash_str, 40, (char*)active_hash.data());
-                // --- КОНЕЦ ИЗМЕНЕНИЯ ---
                 free(hash_str);
             } else {
                 active_hash.clear();
                 if(hash_str) free(hash_str);
             }
         }
-
+        
         std::string status;
         if (!active_hash.is_all_zeros()) {
             status = p_sys->status_updater->get_status_string(active_hash);
+            // Выводим полученную строку статуса в лог, если она не пустая
+            if (!status.empty()) {
+                msg_Dbg(p_intf, "Torrent status update: %s", status.c_str());
+    }
         }
         
-        const char* status_str = status.c_str();
+        // --- НАЧАЛО ИЗМЕНЕНИЯ ---
+        // Логика формирования и установки заголовка
         
-        if (status_str && strlen(status_str) > 0) {
-            input_item_SetName(p_item, status_str);
+        if (!status.empty() && p_sys->original_name) {
+            // Если есть статус торрента, собираем новую строку
+            std::string final_title = "VLC-bittorent-crossplatform plugin: ";
+            final_title += p_sys->original_name; // Добавляем оригинальное имя
+            final_title += " ";                  // Пробел-разделитель
+            final_title += status;               // Добавляем строку статуса
+            
+            input_item_SetName(p_item, final_title.c_str());
         } else {
+            // Если статуса нет (например, воспроизведение остановлено или это не торрент),
+            // убеждаемся, что установлено оригинальное имя.
             if (p_sys->original_name) {
                 char* current_name = input_item_GetName(p_item);
+                // Сравниваем, чтобы избежать лишних вызовов SetName
                 if(current_name && strcmp(current_name, p_sys->original_name) != 0) {
                     input_item_SetName(p_item, p_sys->original_name);
                 }
                 free(current_name);
             }
         }
+        // --- КОНЕЦ ИЗМЕНЕНИЯ ---
         
         vlc_object_release(p_input);
         vlc_object_release(p_playlist);
