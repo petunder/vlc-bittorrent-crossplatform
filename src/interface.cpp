@@ -41,7 +41,8 @@
 
 class VLCStatusUpdater : public Alert_Listener {
 public:
-    VLCStatusUpdater() : m_dht_nodes(0) {}
+    // --- ИЗМЕНЕНИЕ 1: Конструктор теперь принимает vlc_object_t* ---
+    VLCStatusUpdater(vlc_object_t* p_obj) : m_p_obj(p_obj), m_dht_nodes(0) {}
 
     void handle_alert(lt::alert* a) override {
         if (auto* su = lt::alert_cast<lt::state_update_alert>(a)) {
@@ -62,12 +63,10 @@ public:
                     current_hash = st.info_hash;
                 #endif
 
-                // --- НАЧАЛО ИЗМЕНЕНИЯ ---
                 std::string hash_str = lt::aux::to_hex(current_hash.to_string());
-                msg_Dbg(VLC_OBJECT(this), "[BITTORRENT_DIAG] StatusUpdater: Received state_update_alert for hash %s. Status: %s", hash_str.c_str(), oss.str().c_str());
+                // --- ИЗМЕНЕНИЕ 2: Используем сохраненный указатель m_p_obj для логирования ---
+                msg_Dbg(m_p_obj, "[BITTORRENT_DIAG] StatusUpdater: Received state_update_alert for hash %s. Status: %s", hash_str.c_str(), oss.str().c_str());
                 m_status_map[current_hash] = oss.str();
-                // --- КОНЕЦ ИЗМЕНЕНИЯ ---
-                
             }
         } else if (auto* dht = lt::alert_cast<lt::dht_stats_alert>(a)) {
             int total_nodes = 0;
@@ -82,18 +81,18 @@ public:
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_status_map.find(hash);
         if (it != m_status_map.end()) {
-            // --- НАЧАЛО ИЗМЕНЕНИЯ ---
-            msg_Dbg(VLC_OBJECT(this), "[BITTORRENT_DIAG] StatusUpdater: Found status for hash %s", lt::aux::to_hex(hash.to_string()).c_str());
-            // --- КОНЕЦ ИЗМЕНЕНИЯ ---
+            // --- ИЗМЕНЕНИЕ 2: Используем сохраненный указатель m_p_obj для логирования ---
+            msg_Dbg(m_p_obj, "[BITTORRENT_DIAG] StatusUpdater: Found status for hash %s", lt::aux::to_hex(hash.to_string()).c_str());
             return it->second;
         }
-        // --- НАЧАЛО ИЗМЕНЕНИЯ ---
-        msg_Dbg(VLC_OBJECT(this), "[BITTORRENT_DIAG] StatusUpdater: No status found for hash %s", lt::aux::to_hex(hash.to_string()).c_str());
-        // --- КОНЕЦ ИЗМЕНЕНИЯ ---
+        // --- ИЗМЕНЕНИЕ 2: Используем сохраненный указатель m_p_obj для логирования ---
+        msg_Dbg(m_p_obj, "[BITTORRENT_DIAG] StatusUpdater: No status found for hash %s", lt::aux::to_hex(hash.to_string()).c_str());
         return "";
     }
 
 private:
+    // --- ИЗМЕНЕНИЕ 3: Добавляем член класса для хранения указателя на объект VLC ---
+    vlc_object_t* m_p_obj;
     std::mutex m_mutex;
     std::map<lt::sha1_hash, std::string> m_status_map;
     std::atomic<int> m_dht_nodes;
@@ -120,7 +119,8 @@ int InterfaceOpen(vlc_object_t* p_obj) {
     p_sys->original_name = NULL;
     p_sys->last_item = NULL;
     
-    p_sys->status_updater = new VLCStatusUpdater();
+    // --- ИЗМЕНЕНИЕ 4: Передаем p_obj (указатель на наш модуль) в конструктор ---
+    p_sys->status_updater = new VLCStatusUpdater(p_obj);
     Session::get()->register_alert_listener(p_sys->status_updater);
     
     msg_Info(p_intf, "[BITTORRENT_DIAG] InterfaceOpen: Status updater created and listener registered. Starting thread...");
@@ -172,7 +172,7 @@ static void* Run(void* data) {
         
         input_thread_t* p_input = playlist_CurrentInput(p_playlist);
         if (!p_input) {
-            msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: No current input. Skipping.");
+            msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: No current input. Resetting state.");
             if(p_sys->last_item) {
                 p_sys->last_item = NULL;
                 if(p_sys->original_name) free(p_sys->original_name);
@@ -182,7 +182,7 @@ static void* Run(void* data) {
             vlc_object_release(p_playlist);
             continue;
         }
-        // --- НАЧАЛО ИЗМЕНЕНИЯ ---
+
         input_item_t* p_item = input_GetItem(p_input);
         if (!p_item) {
             msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: No input item. Skipping.");
@@ -213,38 +213,26 @@ static void* Run(void* data) {
         if (!active_hash.is_all_zeros()) {
             msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Active hash is set. Getting status string.");
             status = p_sys->status_updater->get_status_string(active_hash);
-            // Выводим полученную строку статуса в лог, если она не пустая
-            if (!status.empty()) {
-                msg_Dbg(p_intf, "Torrent status update: %s", status.c_str());
-    }
         }
         
-        // --- НАЧАЛО ИЗМЕНЕНИЯ ---
-        // Логика формирования и установки заголовка
-        
         if (!status.empty() && p_sys->original_name) {
-            // Если есть статус торрента, собираем новую строку
             std::string final_title = "VLC-bittorent-crossplatform plugin: ";
-            final_title += p_sys->original_name; // Добавляем оригинальное имя
-            final_title += " ";                  // Пробел-разделитель
-            final_title += status;               // Добавляем строку статуса
+            final_title += p_sys->original_name;
+            final_title += " ";
+            final_title += status;
 
             msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Setting item name to: \"%s\"", final_title.c_str());
             input_item_SetName(p_item, final_title.c_str());
         } else {
-            msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Status is empty or no original name. Ensuring original name is set.");
-            // Если статуса нет (например, воспроизведение остановлено или это не торрент),
-            // убеждаемся, что установлено оригинальное имя.
             if (p_sys->original_name) {
                 char* current_name = input_item_GetName(p_item);
-                // Сравниваем, чтобы избежать лишних вызовов SetName
                 if(current_name && strcmp(current_name, p_sys->original_name) != 0) {
+                     msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Status is empty. Restoring original name: \"%s\"", p_sys->original_name);
                     input_item_SetName(p_item, p_sys->original_name);
                 }
                 free(current_name);
             }
         }
-        // --- КОНЕЦ ИЗМЕНЕНИЯ ---
         
         vlc_object_release(p_input);
         vlc_object_release(p_playlist);
