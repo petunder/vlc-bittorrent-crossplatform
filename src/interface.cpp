@@ -181,7 +181,7 @@ static void* Run(void* data) {
                 // Старый код: lt::from_hex(hash_str, (char*)active_hash.data()); (неверные аргументы)
                 // Новый код передает все 3 необходимых аргумента: hex-строку, ее длину (40)
                 // и указатель на выходной буфер.
-                lt::from_hex(hash_str, 40, (char*)active_hash.data());
+                lt::aux::from_hex(hash_str, 40, (char*)active_hash.data());
                 // --- КОНЕЦ ИЗМЕНЕНИЯ ---
                 free(hash_str);
             } else {
