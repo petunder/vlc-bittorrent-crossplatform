@@ -30,13 +30,18 @@
 // --- НАЧАЛО ИЗМЕНЕНИЯ: КОНСТАНТА ДЛЯ ОПТИМИЗАЦИИ ПЕРЕМОТКИ ---
 #define SEEK_READAHEAD_SIZE (20 * 1024 * 1024) // 10 MB
 // --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
+/*
 static input_thread_t *FindInput(stream_extractor_t *se)
 {
     input_thread_t *p_input = (input_thread_t *)var_Get(VLC_OBJECT(se), "input", VLC_VAR_ADDRESS);
     if (p_input)
         vlc_object_hold(p_input);
     return p_input;
+}
+*/
+static input_thread_t *FindInput(stream_extractor_t *se)
+{
+    return (input_thread_t *)vlc_object_find(VLC_OBJECT(se), VLC_OBJECT_INPUT, FIND_PARENT);
 }
 
 struct data_sys {
