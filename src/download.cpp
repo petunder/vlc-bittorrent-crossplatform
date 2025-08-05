@@ -311,11 +311,8 @@ ssize_t Download::read(int file, int64_t fileoff, char* buf, size_t buflen,
     set_piece_priority(file, fileoff, (int)p5, PRIO_HIGH);
 
     // ШАГ 2: ПРОВЕРЯЕМ, есть ли уже нужная нам часть.
-    if (!m_th.have_piece(part.piece)) {
-        // Если части нет, НЕ БЛОКИРУЕМ.
-        // Просто возвращаем 0. VLC попробует снова позже.
-        return 0;
-    }
+    if (!m_th.have_piece(part.piece))
+        download(part, progress_cb);
 
     // ШАГ 3: Если мы дошли сюда, значит часть скачана.
     // Выполняем чтение. Блокировка здесь будет минимальной.
