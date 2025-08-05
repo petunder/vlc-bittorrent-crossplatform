@@ -33,12 +33,10 @@
 
 static input_thread_t *FindInput(stream_extractor_t *se)
 {
-    for (vlc_object_t *o = VLC_OBJECT(se); o; o = vlc_object_parent(o))
-    {
-        if (vlc_object_inherits(o, "input"))
-            return (input_thread_t *)o;
-    }
-    return nullptr;
+    input_thread_t *p_input = (input_thread_t *)var_Get(VLC_OBJECT(se), "input", VLC_VAR_ADDRESS);
+    if (p_input)
+        vlc_object_hold(p_input);
+    return p_input;
 }
 
 struct data_sys {
