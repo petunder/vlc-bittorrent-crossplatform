@@ -38,12 +38,12 @@ static input_thread_t *FindInput(stream_extractor_t *se)
         vlc_object_hold(p_input);
     return p_input;
 }
-*/
+
 static input_thread_t *FindInput(stream_extractor_t *se)
 {
     return (input_thread_t *)vlc_object_find(VLC_OBJECT(se), VLC_OBJECT_INPUT, FIND_PARENT);
 }
-
+*/
 struct data_sys {
     std::shared_ptr<Download> p_download;
     int i_file = 0;
@@ -100,23 +100,12 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
     // ШАГ 3: Устанавливаем приоритет загрузки
     if (s->p_download) {
         msg_Dbg(p_extractor, "Setting piece priority for seeking");
-        // Увеличиваем размер до 50 MB для лучшей буферизации
         s->p_download->set_piece_priority(s->i_file, (int64_t)s->i_pos, 50 * 1024 * 1024, 7);
     }
 
-    // ШАГ 4: СБРОС ВНУТРЕННИХ ЧАСОВ VLC ЧЕРЕЗ СКРЫТЫЙ МЕХАНИЗМ
-    // Это ключевой момент - мы устанавливаем флаг "need_start" в input
-    input_thread_t *p_input = FindInput(p_extractor);
-    
-
-    if (p_input) {
-        msg_Dbg(p_extractor, "Resetting input clock after seek");
-        bool was_set = var_SetBool(p_input, "input-restart", true);
-        msg_Dbg(p_extractor, "input-restart was %s set", was_set ? "successfully" : "NOT");
-        vlc_object_release(p_input);
-    } else {
-        msg_Warn(p_extractor, "Failed to find input thread for clock reset");
-    }
+    // ШАГ 4: СБРОС ВНУТРЕННИХ ЧАСОВ ЧЕРЕЗ СТАНДАРТНЫЙ МЕХАНИЗМ
+    input_Control(p_extractor->source, INPUT_CONTROL_SET_POSITION, (void*)(intptr_t)i_pos);
+    msg_Dbg(p_extractor, "Reset input clock via INPUT_CONTROL_SET_POSITION");
 
     return VLC_SUCCESS;
 }
