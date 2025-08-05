@@ -63,7 +63,7 @@ vlc_module_begin()
 
     add_submodule()
         set_description("Bittorrent Status Updater")
-        set_capability("interface", 0)
+        set_capability("interface", 99)
         set_callbacks(InterfaceOpen, InterfaceClose)
 
 vlc_module_end()
