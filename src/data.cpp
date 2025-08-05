@@ -169,6 +169,8 @@ int DataOpen(vlc_object_t* p_obj) {
     auto md = std::make_unique<char[]>(0x100000);
     ssize_t mdsz = vlc_stream_Read(p_extractor->source, md.get(), 0x100000);
     if (mdsz < 0) return VLC_EGENERIC;
+
+    msg_Info(p_obj, "[BITTORRENT_DIAG] DataOpen: Entering function for a new stream.");
     
     auto* s = new data_sys();
     try {
@@ -176,11 +178,12 @@ int DataOpen(vlc_object_t* p_obj) {
         s->i_file = s->p_download->get_file(p_extractor->identifier).first;
 
         std::string infohash = s->p_download->get_infohash();
+        msg_Info(p_obj, "[BITTORRENT_DIAG] DataOpen: Got infohash: %s. Setting 'bittorrent-active-hash' variable.", infohash.c_str());
         var_SetString(p_obj, "bittorrent-active-hash", infohash.c_str());
         msg_Dbg(p_obj, "Set active torrent hash: %s", infohash.c_str());
 
     } catch (const std::runtime_error& e) {
-        msg_Err(p_extractor, "Failed to add download: %s", e.what());
+        msg_Err(p_extractor, "[BITTORRENT_DIAG] Failed to add download: %s", e.what());
         delete s;
         return VLC_EGENERIC;
     }
@@ -189,7 +192,8 @@ int DataOpen(vlc_object_t* p_obj) {
     p_extractor->pf_read = DataRead;
     p_extractor->pf_seek = DataSeek;
     p_extractor->pf_control = DataControl;
-    
+
+    msg_Info(p_obj, "[BITTORRENT_DIAG] DataOpen: Successfully configured stream extractor.");
     return VLC_SUCCESS;
 }
 
