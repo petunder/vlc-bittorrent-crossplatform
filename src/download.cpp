@@ -405,9 +405,9 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
 
         std::string info_hash_str;
         #if LIBTORRENT_VERSION_NUM >= 20000
-            info_hash_str = lt::to_hex(atp.info_hashes.v1.to_string());
+            info_hash_str = lt::aux::to_hex(atp.info_hashes.v1.to_string());
         #else
-            info_hash_str = lt::to_hex(atp.info_hash.to_string());
+            info_hash_str = lt::aux::to_hex(atp.info_hash.to_string());
         #endif
         std::string path = cache_path + DIR_SEP + info_hash_str + ".torrent";
 
@@ -521,9 +521,9 @@ std::string Download::get_infohash()
     download_metadata();
     
     #if LIBTORRENT_VERSION_NUM >= 20000
-        return lt::to_hex(m_th.info_hashes().v1.to_string());
+        return lt::aux::to_hex(m_th.info_hashes().v1.to_string());
     #else
-        return lt::to_hex(m_th.info_hash().to_string());
+        return lt::aux::to_hex(m_th.info_hash().to_string());
     #endif
 }
 
