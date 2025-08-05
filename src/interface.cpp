@@ -39,6 +39,11 @@
 #include <libtorrent/torrent_status.hpp>
 #include <libtorrent/hex.hpp>
 
+// --- НАЧАЛО ИЗМЕНЕНИЯ 1: ОБЪЯВЛЯЕМ ВНЕШНИЙ ФЛАГ ---
+// Сообщаем этому файлу, что флаг g_is_in_blocking_read существует где-то еще.
+extern std::atomic<bool> g_is_in_blocking_read;
+// --- КОНЕЦ ИЗМЕНЕНИЯ 1 ---
+
 class VLCStatusUpdater : public Alert_Listener {
 public:
     // --- ИЗМЕНЕНИЕ 1: Конструктор теперь принимает vlc_object_t* ---
@@ -162,6 +167,15 @@ static void* Run(void* data) {
 
     while (!p_sys->thread_killed) {
         msleep(400000);
+
+        // ПРОВЕРЯЕМ СВЕТОФОР!
+        if (g_is_in_blocking_read) {
+            // Основной поток занят блокирующим чтением.
+            // Ничего не делаем, чтобы избежать deadlock.
+            // Просто пропустим этот цикл обновления.
+            msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Main thread is in a blocking read. Skipping status update to prevent deadlock.");
+            continue;
+        }
         msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Loop tick.");
         
         playlist_t* p_playlist = pl_Get(p_intf);
