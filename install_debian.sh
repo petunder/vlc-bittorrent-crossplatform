@@ -64,7 +64,7 @@ say "Обнаружен классический VLC: $VLC_BIN"
 # ————— Устанавливаем зависимости для сборки —————
 say "Устанавливаем зависимости для сборки плагина..."
 sudo apt update
-sudo apt install -y build-essential cmake pkg-config libvlc-dev libtorrent-rasterbar-dev
+sudo apt install -y build-essential cmake pkg-config libvlc-dev libvlccore-dev libtorrent-rasterbar-dev
 
 # ————— Сборка плагина —————
 say "Собираем проект..."
