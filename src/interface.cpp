@@ -294,12 +294,8 @@ static void* Run(void* data) {
             input_item_SetName(p_item, final_title.c_str());
         } else {
             if (p_sys->original_name) {
-                char* current_name = input_item_GetName(p_item);
-                if(current_name && strcmp(current_name, p_sys->original_name) != 0) {
-                    msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Status is empty. Restoring original name: \"%s\"", p_sys->original_name);
-                    input_item_SetName(p_item, p_sys->original_name);
-                }
-                free(current_name);
+                msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Status is empty. Restoring original name: \"%s\"", p_sys->original_name);
+                input_item_SetName(p_item, p_sys->original_name);
             }
         }
         
