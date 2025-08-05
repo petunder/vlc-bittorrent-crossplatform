@@ -103,7 +103,7 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
         s->p_download->set_piece_priority(s->i_file, (int64_t)s->i_pos, 50 * 1024 * 1024, 7);
     }
 
-    // ШАГ 4: ПРАВИЛЬНЫЙ СБРОС ВНУТРЕННИХ ЧАСОВ ДЛЯ VLC 3.0.18
+    // ШАГ 4: СБРОС ВНУТРЕННИХ ЧАСОВ VLC
     vlc_value_t val;
     val.p_address = NULL;
     int result = var_Get(VLC_OBJECT(p_extractor), "input", &val);
@@ -112,8 +112,8 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
         input_thread_t *p_input = (input_thread_t *)val.p_address;
         msg_Dbg(p_extractor, "Resetting input clock after seek");
         
-        // Используем INPUT_RESTART вместо var_SetBool("input-restart")
-        input_Control(p_input, INPUT_RESTART, NULL);
+        // ПРАВИЛЬНЫЙ СБРОС ЧЕРЕЗ INPUT_RESTART_ES
+        input_Control(p_input, INPUT_RESTART_ES, -VIDEO_ES);
         
         vlc_object_release(p_input);
     } else {
