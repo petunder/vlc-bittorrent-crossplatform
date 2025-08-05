@@ -33,13 +33,7 @@
 
 static input_thread_t *FindInput(stream_extractor_t *se)
 {
-    for (vlc_object_t *o = VLC_OBJECT(se); o; o = vlc_object_parent(o))
-    {
-        /* "input" – это имя класса input_thread_t в дереве объектов VLC */
-        if (vlc_object_inherits(o, "input"))
-            return (input_thread_t *)o;
-    }
-    return nullptr; /* не нашли */
+    return (input_thread_t*)vlc_object_find(VLC_OBJECT(se), VLC_OBJECT_INPUT, FIND_PARENT);
 }
 
 struct data_sys {
