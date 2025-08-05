@@ -103,9 +103,9 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
         s->p_download->set_piece_priority(s->i_file, (int64_t)s->i_pos, 50 * 1024 * 1024, 7);
     }
 
-    // ШАГ 4: СБРОС ВНУТРЕННИХ ЧАСОВ ЧЕРЕЗ СТАНДАРТНЫЙ МЕХАНИЗМ
-    input_Control(p_extractor->source, INPUT_SET_POSITION, (void*)(intptr_t)i_pos);
-    msg_Dbg(p_extractor, "Reset input clock via INPUT_SET_POSITION");
+    // ШАГ 4: УДАЛЕНО - vlc_stream_Seek() уже сбрасывает внутренние часы
+    // input_Control(p_extractor->source, INPUT_SET_POSITION, (void*)(intptr_t)i_pos);
+    // msg_Dbg(p_extractor, "Reset input clock via INPUT_SET_POSITION");
 
     return VLC_SUCCESS;
 }
