@@ -33,7 +33,14 @@
 
 static input_thread_t *FindInput(stream_extractor_t *se)
 {
-    return (input_thread_t*)vlc_object_find(VLC_OBJECT(se), VLC_OBJECT_INPUT, FIND_PARENT);
+    vlc_object_t *obj = VLC_OBJECT(se);
+    while (obj != nullptr)
+    {
+        if (obj->i_object_type == VLC_OBJECT_INPUT)
+            return (input_thread_t *)obj;
+        obj = obj->parent;
+    }
+    return nullptr;
 }
 
 struct data_sys {
@@ -98,14 +105,7 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
 
     // ШАГ 4: СБРОС ВНУТРЕННИХ ЧАСОВ VLC ЧЕРЕЗ СКРЫТЫЙ МЕХАНИЗМ
     // Это ключевой момент - мы устанавливаем флаг "need_start" в input
-    #ifdef VLC_OBJECT_INPUT
-            /* Заголовки VLC 3 – старый API ещё существует */
-            input_thread_t *p_input =
-                vlc_object_find(p_extractor, VLC_OBJECT_INPUT, FIND_PARENT);
-    #else
-            /* Заголовки VLC 4 – используем новый обход */
-            input_thread_t *p_input = FindInput(p_extractor);
-    #endif
+    input_thread_t *p_input = FindInput(p_extractor);
     
 
     if (p_input) {
