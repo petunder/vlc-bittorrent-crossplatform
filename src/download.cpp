@@ -74,6 +74,19 @@
 
 namespace lt = libtorrent;
 
+// --- НАЧАЛО ИЗМЕНЕНИЯ 1: ГЛОБАЛЬНЫЙ ФЛАГ-СВЕТОФОР ---
+// Этот флаг будет виден в src/interface.cpp, так как они компилируются вместе.
+static std::atomic<bool> g_is_in_blocking_read(false);
+
+// Удобный RAII-класс для управления флагом.
+// Гарантирует, что флаг будет сброшен, даже если произойдет исключение.
+class BlockingReadGuard {
+public:
+    BlockingReadGuard() { g_is_in_blocking_read = true; }
+    ~BlockingReadGuard() { g_is_in_blocking_read = false; }
+};
+// --- КОНЕЦ ИЗМЕНЕНИЯ 1 ---
+
 template <typename T> class vlc_interrupt_guard {
 public:
     vlc_interrupt_guard(T& pr)
@@ -312,6 +325,7 @@ ssize_t Download::read(int file, int64_t fileoff, char* buf, size_t buflen,
 
     // ШАГ 2: ПРОВЕРЯЕМ, есть ли уже нужная нам часть.
     if (!m_th.have_piece(part.piece))
+        BlockingReadGuard guard;
         download(part, progress_cb);
 
     // ШАГ 3: Если мы дошли сюда, значит часть скачана.
