@@ -118,22 +118,22 @@ int InterfaceOpen(vlc_object_t* p_obj) {
     msg_Info(p_intf, "[BITTORRENT_DIAG] InterfaceOpen: Torrent status interface plugin is loading.");
     intf_sys_t* p_sys = new(std::nothrow) intf_sys_t();
     if (!p_sys) return VLC_ENOMEM;
-    
     p_intf->p_sys = p_sys;
     p_sys->thread_killed = false;
     p_sys->original_name = NULL;
     p_sys->last_item = NULL;
     
-    // --- ИЗМЕНЕНИЕ 4: Передаем p_obj (указатель на наш модуль) в конструктор ---
+    // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: Увеличиваем счетчик ссылок для p_obj
+    vlc_object_hold(p_obj);
+    
     p_sys->status_updater = new VLCStatusUpdater(p_obj);
     Session::get()->register_alert_listener(p_sys->status_updater);
-    
     msg_Info(p_intf, "[BITTORRENT_DIAG] InterfaceOpen: Status updater created and listener registered. Starting thread...");
-    
     if (vlc_clone(&p_sys->thread, Run, p_intf, VLC_THREAD_PRIORITY_LOW)) {
         msg_Err(p_intf, "[BITTORRENT_DIAG] InterfaceOpen: Failed to start torrent status thread!");
         Session::get()->unregister_alert_listener(p_sys->status_updater);
         delete p_sys->status_updater;
+        vlc_object_release(p_obj);  // Уменьшаем счетчик ссылок, так как поток не запущен
         delete p_sys;
         return VLC_EGENERIC;
     }
@@ -144,50 +144,57 @@ int InterfaceOpen(vlc_object_t* p_obj) {
 void InterfaceClose(vlc_object_t* p_obj) {
     intf_thread_t* p_intf = (intf_thread_t*)p_obj;
     intf_sys_t* p_sys = (intf_sys_t*)p_intf->p_sys;
-    
     msg_Dbg(p_intf, "Closing torrent status interface plugin");
-    
     p_sys->thread_killed = true;
     vlc_join(p_sys->thread, NULL);
-    
     Session::get()->unregister_alert_listener(p_sys->status_updater);
     delete p_sys->status_updater;
-
+    
+    // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: Уменьшаем счетчик ссылок для p_obj
+    vlc_object_release(p_obj);
+    
     if (p_sys->original_name) {
         free(p_sys->original_name);
     }
+    
+    // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: Корректно освобождаем last_item
+    if (p_sys->last_item) {
+        input_item_Release(p_sys->last_item);
+        p_sys->last_item = NULL;
+    }
+    
     delete p_sys;
 }
 
 static void* Run(void* data) {
     intf_thread_t* p_intf = (intf_thread_t*)data;
     intf_sys_t* p_sys = (intf_sys_t*)p_intf->p_sys;
-    
     lt::sha1_hash active_hash;
-
+    
     while (!p_sys->thread_killed) {
         msleep(400000);
-
+        
         // ПРОВЕРЯЕМ СВЕТОФОР!
         if (g_is_in_blocking_read) {
-            // Основной поток занят блокирующим чтением.
-            // Ничего не делаем, чтобы избежать deadlock.
-            // Просто пропустим этот цикл обновления.
             msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Main thread is in a blocking read. Skipping status update to prevent deadlock.");
             continue;
         }
-        msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Loop tick.");
         
+        // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: Дополнительная проверка флага завершения
+        if (p_sys->thread_killed) break;
+        
+        msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Loop tick.");
         playlist_t* p_playlist = pl_Get(p_intf);
-        if (!p_playlist) {
-            msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: No active playlist. Skipping.");
+        if (!p_playlist || p_sys->thread_killed) {
+            if (p_playlist) vlc_object_release(p_playlist);
             continue;
         }
         
         input_thread_t* p_input = playlist_CurrentInput(p_playlist);
-        if (!p_input) {
+        if (!p_input || p_sys->thread_killed) {
             msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: No current input. Resetting state.");
             if(p_sys->last_item) {
+                input_item_Release(p_sys->last_item);
                 p_sys->last_item = NULL;
                 if(p_sys->original_name) free(p_sys->original_name);
                 p_sys->original_name = NULL;
@@ -196,21 +203,45 @@ static void* Run(void* data) {
             vlc_object_release(p_playlist);
             continue;
         }
-
+        
         input_item_t* p_item = input_GetItem(p_input);
-        if (!p_item) {
+        if (!p_item || p_sys->thread_killed) {
             msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: No input item. Skipping.");
             vlc_object_release(p_input);
             vlc_object_release(p_playlist);
             continue;
         }
         
-        if (p_item != p_sys->last_item) {
+        // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: Проверка флага завершения перед сравнением
+        if (p_sys->thread_killed) {
+            input_item_Release(p_item);
+            vlc_object_release(p_input);
+            vlc_object_release(p_playlist);
+            continue;
+        }
+        
+        bool new_item = false;
+        if (p_sys->last_item) {
+            // Сравниваем по идентификатору, а не по указателю
+            new_item = (input_item_GetID(p_item) != input_item_GetID(p_sys->last_item));
+        } else {
+            new_item = true;
+        }
+        
+        if (new_item) {
             msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: New item detected. Updating info.");
+            
+            // Освобождаем старый last_item
+            if (p_sys->last_item) {
+                input_item_Release(p_sys->last_item);
+            }
+            
             if (p_sys->original_name) free(p_sys->original_name);
             p_sys->original_name = input_item_GetName(p_item);
-            p_sys->last_item = p_item;
-        
+            
+            // Удерживаем новый last_item
+            p_sys->last_item = input_item_Hold(p_item);
+            
             char* hash_str = var_GetString(p_input, "bittorrent-active-hash");
             if(hash_str && strlen(hash_str) == 40) {
                 msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Found active hash variable: %s", hash_str);
@@ -223,10 +254,26 @@ static void* Run(void* data) {
             }
         }
         
+        // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: Проверка флага завершения перед получением статуса
+        if (p_sys->thread_killed) {
+            input_item_Release(p_item);
+            vlc_object_release(p_input);
+            vlc_object_release(p_playlist);
+            continue;
+        }
+        
         std::string status;
         if (!active_hash.is_all_zeros()) {
             msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Active hash is set. Getting status string.");
             status = p_sys->status_updater->get_status_string(active_hash);
+        }
+        
+        // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: Проверка флага завершения перед установкой имени
+        if (p_sys->thread_killed) {
+            input_item_Release(p_item);
+            vlc_object_release(p_input);
+            vlc_object_release(p_playlist);
+            continue;
         }
         
         if (!status.empty() && p_sys->original_name) {
@@ -234,20 +281,20 @@ static void* Run(void* data) {
             final_title += p_sys->original_name;
             final_title += " ";
             final_title += status;
-
             msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Setting item name to: \"%s\"", final_title.c_str());
             input_item_SetName(p_item, final_title.c_str());
         } else {
             if (p_sys->original_name) {
                 char* current_name = input_item_GetName(p_item);
                 if(current_name && strcmp(current_name, p_sys->original_name) != 0) {
-                     msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Status is empty. Restoring original name: \"%s\"", p_sys->original_name);
+                    msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Status is empty. Restoring original name: \"%s\"", p_sys->original_name);
                     input_item_SetName(p_item, p_sys->original_name);
                 }
                 free(current_name);
             }
         }
         
+        input_item_Release(p_item);
         vlc_object_release(p_input);
         vlc_object_release(p_playlist);
     }
