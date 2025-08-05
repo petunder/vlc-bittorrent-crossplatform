@@ -21,7 +21,7 @@
 #include <vlc_plugin.h>
 
 // 3. Остальные специфичные для плагина заголовки
-#include <vlc_objects.h> 
+//#include <vlc_objects.h> 
 #include <vlc_input.h>
 #include <vlc_stream_extractor.h>
 #include <vlc_access.h>
