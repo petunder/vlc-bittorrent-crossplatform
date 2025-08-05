@@ -294,6 +294,9 @@ ssize_t Download::read(int file, int64_t fileoff, char* buf, size_t buflen,
                         (int64_t)buflen, filesz - fileoff }));
     if (part.length <= 0) return 0;
 
+    // --- НАЧАЛО ИСПРАВЛЕНИЯ ---
+
+    // ШАГ 1: ВСЕГДА устанавливаем приоритеты, чтобы libtorrent знал, что качать.
     set_piece_priority(file, fileoff, part.length, PRIO_HIGHEST);
 
     int64_t p01 = std::max(
@@ -307,18 +310,17 @@ ssize_t Download::read(int file, int64_t fileoff, char* buf, size_t buflen,
         (int64_t)32 * MB);
     set_piece_priority(file, fileoff, (int)p5, PRIO_HIGH);
 
-    //if (!m_th.have_piece(part.piece))
-    //    download(part, progress_cb);
+    // ШАГ 2: ПРОВЕРЯЕМ, есть ли уже нужная нам часть.
     if (!m_th.have_piece(part.piece)) {
-        // Если части еще нет, не ждем ее загрузки.
-        // Просто сообщаем VLC, что данных пока нет (возвращаем 0).
-        // VLC попробует снова чуть позже.
-        // Приоритеты для загрузки уже выставлены в DataSeek, так что
-        // нужная часть со временем скачается.
+        // Если части нет, НЕ БЛОКИРУЕМ.
+        // Просто возвращаем 0. VLC попробует снова позже.
         return 0;
     }
 
+    // ШАГ 3: Если мы дошли сюда, значит часть скачана.
+    // Выполняем чтение. Блокировка здесь будет минимальной.
     return read(part, buf, buflen);
+    // --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 }
 
 void Download::set_piece_priority(int file, int64_t off, int size,
