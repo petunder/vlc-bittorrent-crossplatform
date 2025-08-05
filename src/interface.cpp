@@ -55,11 +55,19 @@ public:
                     << "DHT: " << m_dht_nodes << " | "
                     << "Progress: " << static_cast<int>(st.progress * 100) << "% ]";
                 
+                lt::sha1_hash current_hash;
                 #if LIBTORRENT_VERSION_NUM >= 20000
-                    m_status_map[st.info_hashes.v1] = oss.str();
+                    current_hash = st.info_hashes.v1;
                 #else
-                    m_status_map[st.info_hash] = oss.str();
+                    current_hash = st.info_hash;
                 #endif
+
+                // --- НАЧАЛО ИЗМЕНЕНИЯ ---
+                std::string hash_str = lt::aux::to_hex(current_hash.to_string());
+                msg_Dbg(VLC_OBJECT(this), "[BITTORRENT_DIAG] StatusUpdater: Received state_update_alert for hash %s. Status: %s", hash_str.c_str(), oss.str().c_str());
+                m_status_map[current_hash] = oss.str();
+                // --- КОНЕЦ ИЗМЕНЕНИЯ ---
+                
             }
         } else if (auto* dht = lt::alert_cast<lt::dht_stats_alert>(a)) {
             int total_nodes = 0;
@@ -74,8 +82,14 @@ public:
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_status_map.find(hash);
         if (it != m_status_map.end()) {
+            // --- НАЧАЛО ИЗМЕНЕНИЯ ---
+            msg_Dbg(VLC_OBJECT(this), "[BITTORRENT_DIAG] StatusUpdater: Found status for hash %s", lt::aux::to_hex(hash.to_string()).c_str());
+            // --- КОНЕЦ ИЗМЕНЕНИЯ ---
             return it->second;
         }
+        // --- НАЧАЛО ИЗМЕНЕНИЯ ---
+        msg_Dbg(VLC_OBJECT(this), "[BITTORRENT_DIAG] StatusUpdater: No status found for hash %s", lt::aux::to_hex(hash.to_string()).c_str());
+        // --- КОНЕЦ ИЗМЕНЕНИЯ ---
         return "";
     }
 
@@ -97,6 +111,7 @@ static void* Run(void* data);
 
 int InterfaceOpen(vlc_object_t* p_obj) {
     intf_thread_t* p_intf = (intf_thread_t*)p_obj;
+    msg_Info(p_intf, "[BITTORRENT_DIAG] InterfaceOpen: Torrent status interface plugin is loading.");
     intf_sys_t* p_sys = new(std::nothrow) intf_sys_t();
     if (!p_sys) return VLC_ENOMEM;
     
@@ -108,16 +123,16 @@ int InterfaceOpen(vlc_object_t* p_obj) {
     p_sys->status_updater = new VLCStatusUpdater();
     Session::get()->register_alert_listener(p_sys->status_updater);
     
-    msg_Dbg(p_intf, "Torrent status interface plugin started");
+    msg_Info(p_intf, "[BITTORRENT_DIAG] InterfaceOpen: Status updater created and listener registered. Starting thread...");
     
     if (vlc_clone(&p_sys->thread, Run, p_intf, VLC_THREAD_PRIORITY_LOW)) {
-        msg_Err(p_intf, "Failed to start torrent status thread");
+        msg_Err(p_intf, "[BITTORRENT_DIAG] InterfaceOpen: Failed to start torrent status thread!");
         Session::get()->unregister_alert_listener(p_sys->status_updater);
         delete p_sys->status_updater;
         delete p_sys;
         return VLC_EGENERIC;
     }
-    
+    msg_Info(p_intf, "[BITTORRENT_DIAG] InterfaceOpen: Thread started successfully.");
     return VLC_SUCCESS;
 }
 
@@ -147,12 +162,17 @@ static void* Run(void* data) {
 
     while (!p_sys->thread_killed) {
         msleep(400000);
+        msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Loop tick.");
         
         playlist_t* p_playlist = pl_Get(p_intf);
-        if (!p_playlist) continue;
+        if (!p_playlist) {
+            msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: No active playlist. Skipping.");
+            continue;
+        }
         
         input_thread_t* p_input = playlist_CurrentInput(p_playlist);
         if (!p_input) {
+            msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: No current input. Skipping.");
             if(p_sys->last_item) {
                 p_sys->last_item = NULL;
                 if(p_sys->original_name) free(p_sys->original_name);
@@ -165,21 +185,25 @@ static void* Run(void* data) {
         // --- НАЧАЛО ИЗМЕНЕНИЯ ---
         input_item_t* p_item = input_GetItem(p_input);
         if (!p_item) {
+            msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: No input item. Skipping.");
             vlc_object_release(p_input);
             vlc_object_release(p_playlist);
             continue;
         }
         
         if (p_item != p_sys->last_item) {
+            msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: New item detected. Updating info.");
             if (p_sys->original_name) free(p_sys->original_name);
             p_sys->original_name = input_item_GetName(p_item);
             p_sys->last_item = p_item;
         
             char* hash_str = var_GetString(p_input, "bittorrent-active-hash");
             if(hash_str && strlen(hash_str) == 40) {
+                msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Found active hash variable: %s", hash_str);
                 lt::from_hex(hash_str, 40, (char*)active_hash.data());
                 free(hash_str);
             } else {
+                msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: No active hash variable found or it's invalid.");
                 active_hash.clear();
                 if(hash_str) free(hash_str);
             }
@@ -187,6 +211,7 @@ static void* Run(void* data) {
         
         std::string status;
         if (!active_hash.is_all_zeros()) {
+            msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Active hash is set. Getting status string.");
             status = p_sys->status_updater->get_status_string(active_hash);
             // Выводим полученную строку статуса в лог, если она не пустая
             if (!status.empty()) {
@@ -203,9 +228,11 @@ static void* Run(void* data) {
             final_title += p_sys->original_name; // Добавляем оригинальное имя
             final_title += " ";                  // Пробел-разделитель
             final_title += status;               // Добавляем строку статуса
-            
+
+            msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Setting item name to: \"%s\"", final_title.c_str());
             input_item_SetName(p_item, final_title.c_str());
         } else {
+            msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Status is empty or no original name. Ensuring original name is set.");
             // Если статуса нет (например, воспроизведение остановлено или это не торрент),
             // убеждаемся, что установлено оригинальное имя.
             if (p_sys->original_name) {
@@ -223,6 +250,6 @@ static void* Run(void* data) {
         vlc_object_release(p_playlist);
     }
     
-    msg_Dbg(p_intf, "Torrent status thread stopped");
+    msg_Info(p_intf, "[BITTORRENT_DIAG] Torrent status thread stopped");
     return NULL;
 }
