@@ -222,8 +222,17 @@ static void* Run(void* data) {
         
         bool new_item = false;
         if (p_sys->last_item) {
-            // Сравниваем по идентификатору, а не по указателю
-            new_item = (input_item_GetID(p_item) != input_item_GetID(p_sys->last_item));
+            // Получаем URL для обоих элементов и сравниваем их
+            char* last_url = input_item_GetURL(p_sys->last_item);
+            char* current_url = input_item_GetURL(p_item);
+            
+            // Проверяем, что оба URL существуют и различаются
+            new_item = (last_url == NULL || current_url == NULL || 
+                        strcmp(last_url, current_url) != 0);
+            
+            // Освобождаем выделенную память
+            if (last_url) free(last_url);
+            if (current_url) free(current_url);
         } else {
             new_item = true;
         }
