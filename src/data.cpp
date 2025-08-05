@@ -104,8 +104,8 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
     }
 
     // ШАГ 4: СБРОС ВНУТРЕННИХ ЧАСОВ ЧЕРЕЗ СТАНДАРТНЫЙ МЕХАНИЗМ
-    input_Control(p_extractor->source, INPUT_CONTROL_SET_POSITION, (void*)(intptr_t)i_pos);
-    msg_Dbg(p_extractor, "Reset input clock via INPUT_CONTROL_SET_POSITION");
+    input_Control(p_extractor->source, INPUT_SET_POSITION, (void*)(intptr_t)i_pos);
+    msg_Dbg(p_extractor, "Reset input clock via INPUT_SET_POSITION");
 
     return VLC_SUCCESS;
 }
