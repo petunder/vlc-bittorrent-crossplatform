@@ -307,8 +307,16 @@ ssize_t Download::read(int file, int64_t fileoff, char* buf, size_t buflen,
         (int64_t)32 * MB);
     set_piece_priority(file, fileoff, (int)p5, PRIO_HIGH);
 
-    if (!m_th.have_piece(part.piece))
-        download(part, progress_cb);
+    //if (!m_th.have_piece(part.piece))
+    //    download(part, progress_cb);
+    if (!m_th.have_piece(part.piece)) {
+        // Если части еще нет, не ждем ее загрузки.
+        // Просто сообщаем VLC, что данных пока нет (возвращаем 0).
+        // VLC попробует снова чуть позже.
+        // Приоритеты для загрузки уже выставлены в DataSeek, так что
+        // нужная часть со временем скачается.
+        return 0;
+    }
 
     return read(part, buf, buflen);
 }
