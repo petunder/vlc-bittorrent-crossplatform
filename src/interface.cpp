@@ -1,9 +1,10 @@
 /*****************************************************************************
- * interface.cpp — BitTorrent debug-logger (interface only)
+ * interface.cpp — BitTorrent status debug‐logger (interface only)
  *
- * Этот плагин не трогает плейлист и заголовки в VLC — он только
- * регистрируется на state_update_alert и пишет статус торрентов
- * в msg_Dbg (консоль отладки).
+ * Этот плагин не трогает плейлист или заголовки в VLC —
+ * он только регистрируется на state_update_alert и каждый раз
+ * при получении шлёт в msg_Dbg строку вида:
+ *   [BT] <info-hash> | D: <KiB/s> | U: <KiB/s> | Peers: <n> | Progress: <%>
  *****************************************************************************/
 
 #ifdef HAVE_CONFIG_H
@@ -18,21 +19,21 @@
 #include <libtorrent/torrent_status.hpp>
 #include <libtorrent/hex.hpp>
 
-#include "session.h"   // Alert_Listener и Session API :contentReference[oaicite:5]{index=5}
+#include "session.h"   // Alert_Listener и Session API
 
 namespace lt = libtorrent;
 
-/*--------------------------------------------------------------
- * Статус-логгер: подписывается на алерты и выводит их в консоль
- *-------------------------------------------------------------*/
+//------------------------------------------------------------
+// Класс-слушатель алертов libtorrent
+//------------------------------------------------------------
 class TorrentStatusLogger : public Alert_Listener
 {
 public:
     explicit TorrentStatusLogger(vlc_object_t* obj)
         : m_intf(obj)
     {
-        // регистрируем себя на получение алертов
-        Session::get()->register_alert_listener(this);  :contentReference[oaicite:6]{index=6}
+        // Регистрируемся в глобальной сессии
+        Session::get()->register_alert_listener(this);
     }
 
     ~TorrentStatusLogger() override
@@ -40,28 +41,26 @@ public:
         Session::get()->unregister_alert_listener(this);
     }
 
-    // Приводим сигнатуру ровно под Alert_Listener
+    // Обработка всех алертов; нас интересует только state_update_alert
     void handle_alert(lt::alert* a) override
     {
         if (auto* su = lt::alert_cast<lt::state_update_alert>(a))
         {
             for (auto const& st : su->status)
             {
-                // Переводим хеш в hex
-                std::string hash = lt::aux::to_hex(
-                    #if LIBTORRENT_VERSION_NUM >= 20000
-                        st.info_hashes.v1.to_string()
-                    #else
-                        st.info_hash.to_string()
-                    #endif
-                );
-
-                // Скорости в KiB/s и прогресс в %
+                // Инфо-хеш в hex
+                std::string hash;
+#if LIBTORRENT_VERSION_NUM >= 20000
+                hash = lt::to_hex(st.info_hashes.v1);
+#else
+                hash = lt::to_hex(st.info_hash);
+#endif
+                // Скорости и прогресс
                 int dl = st.download_payload_rate / 1024;
                 int ul = st.upload_payload_rate   / 1024;
                 double prog = st.progress * 100.0;
 
-                // Выводим в debug-консоль
+                // Вывод в debug-консоль VLC
                 msg_Dbg(m_intf,
                         "[BT] %s | D: %d KiB/s | U: %d KiB/s | Peers: %d | Progress: %.1f%%",
                         hash.c_str(), dl, ul, st.num_peers, prog);
@@ -73,25 +72,50 @@ private:
     vlc_object_t* m_intf;
 };
 
-/*--------------------------------------------------------------
- * VLC-модули: открытие и закрытие плагина
- *-------------------------------------------------------------*/
+//------------------------------------------------------------
+// Определяем собственную структуру для p_sys
+//------------------------------------------------------------
+struct intf_sys_t
+{
+    TorrentStatusLogger* logger;
+};
+
+//------------------------------------------------------------
+// Open — точка входа VLC для интерфейса
+//------------------------------------------------------------
 static int Open(vlc_object_t* obj)
 {
     intf_thread_t* intf = reinterpret_cast<intf_thread_t*>(obj);
 
-    auto* logger = new (std::nothrow) TorrentStatusLogger(obj);
-    if (!logger)
+    // Аллоцируем нашу структуру
+    intf_sys_t* sys = static_cast<intf_sys_t*>(
+        malloc(sizeof(intf_sys_t))
+    );
+    if (!sys)
         return VLC_ENOMEM;
 
-    intf->p_sys = logger;
+    // Создаём логгер
+    sys->logger = new (std::nothrow) TorrentStatusLogger(obj);
+    if (!sys->logger)
+    {
+        free(sys);
+        return VLC_ENOMEM;
+    }
+
+    intf->p_sys = sys;
     return VLC_SUCCESS;
 }
 
+//------------------------------------------------------------
+// Close — точка выхода VLC для интерфейса
+//------------------------------------------------------------
 static void Close(vlc_object_t* obj)
 {
     intf_thread_t* intf = reinterpret_cast<intf_thread_t*>(obj);
-    delete static_cast<TorrentStatusLogger*>(intf->p_sys);
+    intf_sys_t* sys = reinterpret_cast<intf_sys_t*>(intf->p_sys);
+
+    delete sys->logger;
+    free(sys);
 }
 
 vlc_module_begin()
