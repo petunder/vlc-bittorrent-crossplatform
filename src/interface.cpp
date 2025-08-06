@@ -113,7 +113,8 @@ private:
             for (auto const& l : lines) msg_Dbg(m_intf, "%s", l.c_str());
 
             /* 2. overlay-OSD через фильтр “marq” */
-            playlist_t* pl = pl_Get(m_intf);             /* <-- штатное API */
+            intf_thread_t* intf = reinterpret_cast<intf_thread_t*>(m_intf);
+            playlist_t* pl = pl_Get(intf);               /* <-- штатное API */
             if (!pl) continue;
 
             if (!m_marq_on)                              /* включаем один раз */
