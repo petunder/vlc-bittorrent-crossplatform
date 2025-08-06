@@ -1,68 +1,64 @@
 /*
-Copyright 2016 Johan Gunnarsson <johan.gunnarsson@gmail.com>
-
-This file is part of vlc-bittorrent.
-
-vlc-bittorrent is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-vlc-bittorrent is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
-*/
+ * module.cpp – корневой описатель VLC-плагина «vlc-bittorrent»
+ *
+ * Содержит один главный модуль категории INPUT (stream_directory)
+ * и три под-модуля:
+ *   • stream_extractor  – чтение данных торрент-файла;
+ *   • access            – извлечение .torrent из magnet-ссылки;
+ *   • interface         – ЛОГ-гер статуса (выводит в msg_Dbg).
+ *
+ * Copyright (C) 2016-2025
+ *   Johan Gunnarsson <johan.gunnarsson@gmail.com>,
+ *   другие авторы — смотрите git-историю проекта.
+ *
+ * Распространяется под лицензией GPL-3.0-or-later.
+ */
 
 #ifdef HAVE_CONFIG_H
-#include "config.h"
+#   include "config.h"
 #endif
 
-#include "vlc.h" // Unified header
+#include "vlc.h"              // единый заголовок с include-порядком VLC
 
-#include "data.h"
-#include "magnetmetadata.h"
-#include "metadata.h"
-#include "interface.h"
+#include "metadata.h"         // stream_directory
+#include "data.h"             // stream_extractor
+#include "magnetmetadata.h"   // access
+#include "interface.h"        // interface (Logger)
 
-// clang-format off
-
+// ────────────────────────────────────────────────────────────
+//                    Описание VLC-модуля
+// ────────────────────────────────────────────────────────────
 vlc_module_begin()
+    /* ────────────────── главный модуль ─────────────────── */
     set_shortname("bittorrent")
-    set_category(CAT_INPUT)
+    set_category   (CAT_INPUT)
     set_subcategory(SUBCAT_INPUT_STREAM_FILTER)
-    set_description("Bittorrent metadata access")
+    set_description("BitTorrent metadata access")
     set_capability("stream_directory", 99)
-    set_callbacks(MetadataOpen, NULL)
+    set_callbacks  (MetadataOpen, NULL)
 
-#if 1
+    /* Конфигурация загрузок */
     add_directory(DLDIR_CONFIG, NULL, "Downloads",
-        "Directory where VLC will put downloaded files.", false)
+                  "Directory where VLC will put downloaded files.", false)
     add_bool(KEEP_CONFIG, false, "Don't delete files",
-        "Don't delete files after download.", true)
-#else
-    add_directory(DLDIR_CONFIG, NULL, "Downloads",
-        "Directory where VLC will put downloaded files.")
-    add_bool(KEEP_CONFIG, false, "Don't delete files",
-        "Don't delete files after download.")
-#endif
+             "Don't delete files after download.", true)
 
+    /* ──────────────── под-модуль: stream_extractor ─────────────── */
     add_submodule()
-        set_description("Bittorrent data access")
+        set_description("BitTorrent data access")
         set_capability("stream_extractor", 99)
         set_callbacks(DataOpen, DataClose)
 
+    /* ──────────────── под-модуль: access (magnet) ──────────────── */
     add_submodule()
-        set_description("Bittorrent magnet metadata access")
+        set_description("BitTorrent magnet metadata access")
         set_capability("access", 60)
         add_shortcut("file", "magnet")
         set_callbacks(MagnetMetadataOpen, MagnetMetadataClose)
 
+    /* ──────────────── под-модуль: interface (logger) ───────────── */
     add_submodule()
-        set_description("Bittorrent Status Updater")
+        set_description("BitTorrent status debug logger (console-only)")
         set_capability("interface", 99)
         set_callbacks(InterfaceOpen, InterfaceClose)
 
