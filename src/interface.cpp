@@ -239,17 +239,29 @@ static void* Run(void* data) {
         
         if (new_item) {
             msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: New item detected. Updating info.");
+
+            // Сначала удерживаем новый input_item, чтобы его память не ушла из-под нас
+            input_item_Hold(p_item);
             
             // Освобождаем старый last_item
             if (p_sys->last_item) {
                 input_item_Release(p_sys->last_item);
             }
+
+            // Освобождаем старое имя
+            if (p_sys->original_name) {
+                free(p_sys->original_name);
+            }
             
-            if (p_sys->original_name) free(p_sys->original_name);
+            //p_sys->original_name = input_item_GetName(p_item);
+            // Теперь безопасно дублируем имя
             p_sys->original_name = input_item_GetName(p_item);
             
             // Удерживаем новый last_item
-            p_sys->last_item = input_item_Hold(p_item);
+            //p_sys->last_item = input_item_Hold(p_item);
+
+            // И сохраняем ссылку на input_item
+            p_sys->last_item = p_item;
             
             char* hash_str = var_GetString(p_input, "bittorrent-active-hash");
             if(hash_str && strlen(hash_str) == 40) {
