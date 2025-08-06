@@ -1,9 +1,9 @@
 /*****************************************************************************
- * interface.cpp — BitTorrent status debug logger
+ * interface.cpp — BitTorrent status debug logger (троттлинг 1 Hz)
  *
- * Постоянно выводит строку вида
+ * Выводит строку вида
  *   [BT] <hash> | D: <KiB/s> | U: <KiB/s> | Peers: <n> | Progress: <p>%
- * в отладочную консоль VLC (msg_Dbg).
+ * в отладочную консоль VLC (msg_Dbg) не чаще одного раза в секунду.
  *****************************************************************************/
 
 #ifdef HAVE_CONFIG_H
@@ -18,6 +18,7 @@
 #include <libtorrent/torrent_status.hpp>
 #include <cstdint>
 #include <string>
+#include <chrono>
 
 #include "session.h"  // Session::get() и Alert_Listener
 
@@ -40,13 +41,14 @@ static std::string sha1_to_hex(const lt::sha1_hash& h)
 }
 
 /*-------------------------------------------------------
- * Класс-слушатель алертов libtorrent
+ * Слушатель алертов с троттлингом 1 Hz
  *------------------------------------------------------*/
 class TorrentStatusLogger final : public Alert_Listener
 {
 public:
     explicit TorrentStatusLogger(vlc_object_t* obj)
         : m_intf(obj)
+        , m_last( std::chrono::steady_clock::now() - std::chrono::seconds(1) )
     {
         Session::get()->register_alert_listener(this);
     }
@@ -58,32 +60,42 @@ public:
 
     void handle_alert(lt::alert* a) override
     {
-        if (auto* up = lt::alert_cast<lt::state_update_alert>(a)) {
-            for (auto const& st : up->status)
-            {
-#if LIBTORRENT_VERSION_NUM >= 20000
-                auto const& ih = st.info_hashes.v1;
-#else
-                auto const& ih = st.info_hash;
-#endif
-                std::string hash = sha1_to_hex(ih);
-                int dl_kib = st.download_payload_rate / 1024;
-                int ul_kib = st.upload_payload_rate   / 1024;
-                float prog  = st.progress * 100.0f;
+        // обрабатываем только state_update_alert
+        auto* up = lt::alert_cast<lt::state_update_alert>(a);
+        if (!up) return;
 
-                msg_Dbg(m_intf,
-                        "[BT] %s | D: %d KiB/s | U: %d KiB/s | Peers: %d | Progress: %.1f%%",
-                        hash.c_str(), dl_kib, ul_kib, st.num_peers, prog);
-            }
+        // троттлим печать до 1 Hz
+        auto now = std::chrono::steady_clock::now();
+        if (now - m_last < std::chrono::seconds(1))
+            return;
+        m_last = now;
+
+        // итерируем по всем статусам
+        for (auto const& st : up->status)
+        {
+#if LIBTORRENT_VERSION_NUM >= 20000
+            auto const& ih = st.info_hashes.v1;
+#else
+            auto const& ih = st.info_hash;
+#endif
+            std::string hash   = sha1_to_hex(ih);
+            int         dl_kib = st.download_payload_rate / 1024;
+            int         ul_kib = st.upload_payload_rate   / 1024;
+            float       prog   = st.progress * 100.0f;
+
+            msg_Dbg(m_intf,
+                    "[BT] %s | D: %d KiB/s | U: %d KiB/s | Peers: %d | Progress: %.1f%%",
+                    hash.c_str(), dl_kib, ul_kib, st.num_peers, prog);
         }
     }
 
 private:
-    vlc_object_t* m_intf;
+    vlc_object_t*                              m_intf;
+    std::chrono::steady_clock::time_point      m_last;
 };
 
 /*-------------------------------------------------------
- * Вспомогательная структура для хранения нашего логгера
+ * Вспомогательная структура для хранения логгера
  *------------------------------------------------------*/
 struct intf_sys_t
 {
@@ -91,8 +103,7 @@ struct intf_sys_t
 };
 
 /*-------------------------------------------------------
- * Эти функции должны называться ровно так,
- * чтобы module.cpp их нашёл
+ * Экспортируемые VLC-коллбеки (имена из module.cpp)
  *------------------------------------------------------*/
 int InterfaceOpen(vlc_object_t* obj)
 {
