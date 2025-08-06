@@ -107,11 +107,3 @@ static void InterfaceClose(vlc_object_t* obj)
     delete sys->logger;
     free(sys);
 }
-
-/*-------------------------------------------------------
- * Экспортируем имена для module.cpp
- *------------------------------------------------------*/
-extern "C" {
-    int  InterfaceOpen (vlc_object_t*) __attribute__((visibility("default")));
-    void InterfaceClose(vlc_object_t*) __attribute__((visibility("default")));
-}
