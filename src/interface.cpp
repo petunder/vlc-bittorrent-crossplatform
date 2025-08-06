@@ -10,7 +10,6 @@
 # include "config.h"
 #endif
 
-#include <vlc.h>
 
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/torrent_status.hpp>
@@ -29,6 +28,8 @@
 #include <unistd.h>
 
 #include "session.h"   // Session::get() и Alert_Listener
+
+#include <vlc.h>
 
 namespace lt = libtorrent;
 
