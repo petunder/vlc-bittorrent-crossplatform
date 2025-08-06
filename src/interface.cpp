@@ -4,22 +4,15 @@
  * Каждую секунду:
  *  • обновляет внутренний буфер строк статуса из libtorrent;
  *  • выводит их в msg_Dbg;
- *  • и дублирует ту же информацию как текст‐оверлей (Marquee) поверх видео
- *    через встроенный субпикчер‐фильтр “marq”.
+ *  • и дублирует информацию как текст‐оверлей (Marquee) поверх видео
+ *    через встроенный субпикчер-фильтр “marq”.
  *****************************************************************************/
 
 #ifdef HAVE_CONFIG_H
 #   include "config.h"
 #endif
 
-#include <vlc_common.h>
-#include <vlc_plugin.h>
-#include <vlc_interface.h>
-
-#include <vlc_playlist.h>    // vlc_intf_GetMainPlaylist
-#include <vlc_player.h>      // vlc_playlist_GetPlayer
-#include <vout/stream.h>     // vout_thread_t
-
+#include "vlc.h"               // unified header, включает vlc_variables.h, vlc_playlist.h, vlc_interface.h и пр.
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/torrent_status.hpp>
 
@@ -31,12 +24,12 @@
 #include <atomic>
 #include <cstdio>
 
-#include "session.h"         // Session::get() и Alert_Listener
+#include "session.h"           // Session::get() и Alert_Listener
 
 namespace lt = libtorrent;
 
 /*-------------------------------------------------------
- * Преобразование info-hash → 40-символьная hex-строка
+ * Вспомогательная: sha1_hash → 40-символьная hex-строка
  *------------------------------------------------------*/
 static std::string sha1_to_hex(const lt::sha1_hash& h)
 {
@@ -51,7 +44,7 @@ static std::string sha1_to_hex(const lt::sha1_hash& h)
 
 /*-------------------------------------------------------
  * Логгер: ловит state_update_alert → обновляет буфер;
- * loop() каждые 1 с печатает буфер и обновляет OSD‐Marquee
+ * loop() раз в секунду печатает буфер и обновляет Marquee
  *------------------------------------------------------*/
 class TorrentStatusLogger final : public Alert_Listener
 {
@@ -99,6 +92,7 @@ public:
             tmp.emplace_back(buf, (len > 0 ? (size_t)len : 0));
         }
 
+        // atomically swap buffers
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             m_lines.swap(tmp);
@@ -106,15 +100,15 @@ public:
     }
 
 private:
-    vlc_object_t*                    m_intf;
-    std::mutex                       m_mutex;
-    std::vector<std::string>         m_lines;
+    vlc_object_t*                m_intf;
+    std::mutex                   m_mutex;
+    std::vector<std::string>     m_lines;
 
-    std::atomic<bool>                m_running;
-    std::thread                      m_thread;
-    bool                             m_marq_enabled;
+    std::atomic<bool>            m_running;
+    std::thread                  m_thread;
+    bool                         m_marq_enabled;
 
-    // loop: жёстко раз в секунду выполняем вывод и обновление OSD
+    // loop: строго раз в секунду выводим и обновляем Marquee
     void loop()
     {
         using namespace std::chrono_literals;
@@ -122,7 +116,7 @@ private:
         {
             std::this_thread::sleep_for(1s);
 
-            // подготавливаем копию буфера
+            // копируем буфер
             std::vector<std::string> snapshot;
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
@@ -135,48 +129,47 @@ private:
             for (auto const& line : snapshot)
                 msg_Dbg(m_intf, "%s", line.c_str());
 
-            // 2) Субпикчер-Marquee
-            // Получаем текущий playlist → player → основной vout
-            vlc_playlist_t* playlist = vlc_intf_GetMainPlaylist(
-                reinterpret_cast<intf_thread_t*>(m_intf));
+            // 2) Настраиваем и обновляем Marquee-subfilter
+            vlc_playlist_t* playlist =
+                vlc_intf_GetMainPlaylist(reinterpret_cast<intf_thread_t*>(m_intf));
             if (!playlist)
                 continue;
-            vlc_player_t* player = vlc_playlist_GetPlayer(playlist);
-            if (!player)
-                continue;
 
-            // Единожды включаем фильтр “marq” на плейере
             if (!m_marq_enabled)
             {
-                var_SetString(player, "sub-filter", "marq");        // включаем sub-filter marq :contentReference[oaicite:0]{index=0}
-                var_SetInteger(player, "marq-position", 6);         // top-left (4|2) :contentReference[oaicite:1]{index=1}
-                var_SetInteger(player, "marq-opacity", 200);        // полупрозрачность :contentReference[oaicite:2]{index=2}
-                var_SetInteger(player, "marq-size", 24);            // размер шрифта :contentReference[oaicite:3]{index=3}
-                var_SetInteger(player, "marq-timeout", 0);          // без автозакрытия :contentReference[oaicite:4]{index=4}
-                var_SetInteger(player, "marq-refresh", 1000);       // 1 с между обновлениями :contentReference[oaicite:5]{index=5}
+                // Включаем sub-filter marq
+                var_SetString(playlist, "sub-filter", "marq");            // :contentReference[oaicite:0]{index=0}
+                var_SetInteger(playlist, "marq-position", 6);             // top-left :contentReference[oaicite:1]{index=1}
+                var_SetInteger(playlist, "marq-opacity", 200);            // полупрозрачность :contentReference[oaicite:2]{index=2}
+                var_SetInteger(playlist, "marq-size", 24);                // размер шрифта :contentReference[oaicite:3]{index=3}
+                var_SetInteger(playlist, "marq-timeout", 0);              // без автозакрытия :contentReference[oaicite:4]{index=4}
+                var_SetInteger(playlist, "marq-refresh", 1000);           // 1 с между обновлениями :contentReference[oaicite:5]{index=5}
                 m_marq_enabled = true;
             }
 
-            // Строчим весь буфер как единую строку (можно отображать только последнюю)
+            // Собираем строки в одну текстовую «карусель»
             std::string marquee_text;
             for (auto const& line : snapshot)
             {
                 marquee_text += line;
                 marquee_text += "\n";
             }
-            // Обновляем текст
-            var_SetString(player, "marq-marquee", marquee_text.c_str()); :contentReference[oaicite:6]{index=6}
+            // Обновляем текст Marquee
+            var_SetString(playlist, "marq-marquee", marquee_text.c_str()); // :contentReference[oaicite:6]{index=6}
         }
     }
 };
 
 /*-------------------------------------------------------
- * VLC-интерфейсная структура
+ * Системная структура VLC-интерфейса
  *------------------------------------------------------*/
-struct intf_sys_t { TorrentStatusLogger* logger; };
+struct intf_sys_t
+{
+    TorrentStatusLogger* logger;
+};
 
 /*-------------------------------------------------------
- * Open / Close — зовутся из module.cpp
+ * Open / Close (из module.cpp)
  *------------------------------------------------------*/
 int InterfaceOpen(vlc_object_t* obj)
 {
