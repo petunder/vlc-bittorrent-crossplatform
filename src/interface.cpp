@@ -11,7 +11,7 @@
 # include "config.h"
 #endif
 
-#include "vlc.h"                 // unified VLC headers (vlc_common.h, vlc_plugin.h, vlc_interface.h, vlc_playlist.h, vlc_variables.h и пр.)
+#include "vlc.h"                 // unified VLC headers
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/torrent_status.hpp>
 
@@ -153,7 +153,7 @@ private:
             // Пишем каждую строку в FIFO вида "0 <text>\n"
             for (auto const& line : snapshot) {
                 std::string cmd = "0 " + line + "\n";
-                ::write(m_fifo_fd, cmd.c_str(), cmd.size());
+                (void)::write(m_fifo_fd, cmd.c_str(), cmd.size());
             }
         }
     }
