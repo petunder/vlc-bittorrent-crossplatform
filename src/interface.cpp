@@ -153,7 +153,9 @@ private:
             // Пишем каждую строку в FIFO вида "0 <text>\n"
             for (auto const& line : snapshot) {
                 std::string cmd = "0 " + line + "\n";
-                (void)::write(m_fifo_fd, cmd.c_str(), cmd.size());
+                // Чтобы избежать предупреждения о неиспользованном результате
+                ssize_t written = ::write(m_fifo_fd, cmd.c_str(), cmd.size());
+                (void)written;
             }
         }
     }
