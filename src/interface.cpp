@@ -14,7 +14,7 @@
  *     `state_update_alert` и `dht_stats_alert`, и на их основе формирует
  *     актуальную строку статуса.
  * 4.  **Агрессивное отображение:** Отдельный поток (`Run`) постоянно (каждые
- *     400 мс) читает сгенерированную строку статуса и принудительно
+ *     1000 мс) читает сгенерированную строку статуса и принудительно
  *     устанавливает её в качестве имени текущего медиа-элемента, решая
  *     проблему сброса заголовка интерфейсом VLC.
  * 5.  **Отслеживание активного торрента:** Поток `Run` также следит за
@@ -172,7 +172,7 @@ static void* Run(void* data) {
     lt::sha1_hash active_hash;
     
     while (!p_sys->thread_killed) {
-        msleep(400000);
+        msleep(1000000);
         
         // ПРОВЕРЯЕМ СВЕТОФОР!
         if (g_is_in_blocking_read) {
@@ -303,7 +303,9 @@ static void* Run(void* data) {
             final_title += " ";
             final_title += status;
             msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Setting item name to: \"%s\"", final_title.c_str());
+            vlc_mutex_lock(&p_item->lock);
             input_item_SetName(p_item, final_title.c_str());
+            vlc_mutex_unlock(&p_item->lock);
         } else {
             if (p_sys->original_name) {
                 msg_Dbg(p_intf, "[BITTORRENT_DIAG] Run: Status is empty. Restoring original name: \"%s\"", p_sys->original_name);
