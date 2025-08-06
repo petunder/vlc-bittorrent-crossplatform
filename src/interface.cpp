@@ -29,7 +29,7 @@
 
 #include "session.h"   // Session::get() и Alert_Listener
 
-#include <vlc.h>
+#include "vlc.h" // Unified header
 
 namespace lt = libtorrent;
 
