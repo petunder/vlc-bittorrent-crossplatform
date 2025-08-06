@@ -13,7 +13,6 @@
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_interface.h>
-#include <vlc_playlists.h>
 #include <vlc_variables.h>
 
 #include <libtorrent/alert_types.hpp>
