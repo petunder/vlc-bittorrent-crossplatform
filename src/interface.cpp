@@ -1,10 +1,10 @@
 /*****************************************************************************
- * interface.cpp — BitTorrent status dynamic overlay (1 Hz)
+ * interface.cpp — BitTorrent status dynamic overlay (1 Hz, C++ linkage)
  *
  * Каждую секунду:
  *  • собирает строки статуса из libtorrent;
  *  • пишет их в msg_Dbg;
- *  • и дублирует в динамический оверлей VLC через spu/dynamicoverlay.
+ *  • дублирует в динамический оверлей VLC через spu/dynamicoverlay.
  *****************************************************************************/
 
 #ifdef HAVE_CONFIG_H
@@ -12,6 +12,8 @@
 #endif
 
 #include "vlc.h"                 // unified VLC headers
+#include "interface.h"           // декларации InterfaceOpen/InterfaceClose :contentReference[oaicite:2]{index=2}
+
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/torrent_status.hpp>
 
@@ -32,65 +34,49 @@
 
 namespace lt = libtorrent;
 
-/*-------------------------------------------------------
- * Преобразование sha1_hash → 40-символьная hex-строка
- *------------------------------------------------------*/
+/* sha1_hash → 40-символьная hex-строка */
 static std::string sha1_to_hex(const lt::sha1_hash& h)
 {
     static constexpr char hex[] = "0123456789abcdef";
-    std::string out;
-    out.reserve(40);
-    for (auto byte : h) {
-        out.push_back(hex[(byte >> 4) & 0xF]);
-        out.push_back(hex[ byte        & 0xF]);
+    std::string out; out.reserve(40);
+    for (uint8_t b : h) {
+        out.push_back(hex[b >> 4]);
+        out.push_back(hex[b & 0xF]);
     }
     return out;
 }
 
 /*-------------------------------------------------------
- * TorrentStatusLogger:
- *  • ловит state_update_alert (handle_alert)
- *  • фоновой поток loop() каждую секунду пишет snapshot
- *    в FIFO для spu/dynamicoverlay (переменная dynamicoverlay-file)
+ * Слушатель алертов libtorrent + динамический оверлей
  *------------------------------------------------------*/
 class TorrentStatusLogger final : public Alert_Listener
 {
 public:
     explicit TorrentStatusLogger(vlc_object_t* obj)
-        : m_intf(obj)
-        , m_running(true)
-        , m_thread(&TorrentStatusLogger::loop, this)
-        , m_fifo_fd(-1)
+      : m_intf(obj), m_running(true), m_thread(&TorrentStatusLogger::loop, this)
     {
-        // 1) Подписка на алерты libtorrent
+        // 1) Подписка на алерты
         Session::get()->register_alert_listener(this);
 
-        // 2) Находим playlist и настраиваем sub-filter=dynamicoverlay
+        // 2) Включить spu/dynamicoverlay
         playlist_t* pl = pl_Get(reinterpret_cast<intf_thread_t*>(m_intf));
         var_SetString(pl, "sub-filter", "dynamicoverlay");
 
-        // 3) Получаем путь к FIFO из переменной dynamicoverlay-file
-        char* fifo_var = var_GetString(pl, "dynamicoverlay-file");
-        m_fifo_path = fifo_var
-            ? std::string(fifo_var)
-            : std::string("/tmp/vlc-bittorrent-overlay.fifo");
-        free(fifo_var);
+        // 3) Определить путь к FIFO
+        char* fifo = var_GetString(pl, "dynamicoverlay-file");
+        m_fifo_path = fifo ? fifo : "/tmp/vlc-bittorrent-overlay.fifo";
+        free(fifo);
 
-        // 4) Создаём FIFO (если нужно) и открываем его на запись, non-blocking
-        if (::mkfifo(m_fifo_path.c_str(), 0666) && errno != EEXIST) {
-            msg_Err(m_intf, "Cannot mkfifo %s: %s",
-                    m_fifo_path.c_str(), std::strerror(errno));
-        }
+        // 4) Создать и открыть FIFO
+        if (::mkfifo(m_fifo_path.c_str(), 0666) && errno != EEXIST)
+            msg_Err(m_intf, "mkfifo(%s): %s", m_fifo_path.c_str(), strerror(errno));
         m_fifo_fd = ::open(m_fifo_path.c_str(), O_WRONLY | O_NONBLOCK);
-        if (m_fifo_fd < 0) {
-            msg_Warn(m_intf, "Cannot open overlay FIFO %s: %s",
-                     m_fifo_path.c_str(), std::strerror(errno));
-        }
+        if (m_fifo_fd < 0)
+            msg_Warn(m_intf, "open(%s): %s", m_fifo_path.c_str(), strerror(errno));
     }
 
     ~TorrentStatusLogger() override
     {
-        // Отписываемся и останавливаем поток
         Session::get()->unregister_alert_listener(this);
         m_running = false;
         if (m_thread.joinable())
@@ -99,7 +85,7 @@ public:
             ::close(m_fifo_fd);
     }
 
-    // libtorrent thread
+    // вызывается в потоке libtorrent
     void handle_alert(lt::alert* a) override
     {
         if (auto* up = lt::alert_cast<lt::state_update_alert>(a)) {
@@ -113,12 +99,12 @@ public:
 #endif
                 char buf[128];
                 int len = std::snprintf(buf, sizeof(buf),
-                    "[BT] %s | D: %d KiB/s | U: %d KiB/s | Peers: %d | Progress: %.1f%%",
+                    "[BT] %s | D: %d KiB/s | U: %d KiB/s | Peers: %d | Prg: %.1f%%",
                     sha1_to_hex(ih).c_str(),
-                    st.download_payload_rate / 1024,
-                    st.upload_payload_rate   / 1024,
+                    st.download_payload_rate/1024,
+                    st.upload_payload_rate/1024,
                     st.num_peers,
-                    st.progress * 100.0f);
+                    st.progress*100.0f);
                 if (len > 0)
                     tmp.emplace_back(buf, static_cast<size_t>(len));
             }
@@ -128,32 +114,30 @@ public:
     }
 
 private:
-    vlc_object_t*            m_intf;
-    std::mutex               m_mutex;
-    std::vector<std::string> m_lines;
-    std::atomic<bool>        m_running;
-    std::thread              m_thread;
-    std::string              m_fifo_path;
-    int                      m_fifo_fd;
+    vlc_object_t*                m_intf;
+    std::mutex                   m_mutex;
+    std::vector<std::string>     m_lines;
+    std::atomic<bool>            m_running;
+    std::thread                  m_thread;
+    std::string                  m_fifo_path;
+    int                           m_fifo_fd;
 
+    // loop: 1 Hz отправляет snapshot в FIFO
     void loop()
     {
         using namespace std::chrono_literals;
         while (m_running) {
             std::this_thread::sleep_for(1s);
 
-            std::vector<std::string> snapshot;
+            std::vector<std::string> snap;
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
-                snapshot = m_lines;
+                snap = m_lines;
             }
-            if (m_fifo_fd < 0)
-                continue;
+            if (m_fifo_fd < 0) continue;
 
-            // Пишем каждую строку в FIFO вида "0 <text>\n"
-            for (auto const& line : snapshot) {
+            for (auto const& line : snap) {
                 std::string cmd = "0 " + line + "\n";
-                // Чтобы избежать предупреждения о неиспользованном результате
                 ssize_t written = ::write(m_fifo_fd, cmd.c_str(), cmd.size());
                 (void)written;
             }
@@ -162,11 +146,9 @@ private:
 };
 
 /*-------------------------------------------------------
- * VLC boilerplate: InterfaceOpen / InterfaceClose
+ * VLC interface boilerplate
  *------------------------------------------------------*/
 struct intf_sys_t { TorrentStatusLogger* logger; };
-
-extern "C" {
 
 int InterfaceOpen(vlc_object_t* obj)
 {
@@ -185,5 +167,3 @@ void InterfaceClose(vlc_object_t* obj)
     delete sys->logger;
     free(sys);
 }
-
-} // extern "C"
