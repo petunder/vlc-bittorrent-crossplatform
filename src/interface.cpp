@@ -29,7 +29,8 @@ namespace lt = libtorrent;
 static std::string sha1_to_hex(const lt::sha1_hash& h)
 {
     static constexpr char hex[] = "0123456789abcdef";
-    std::string out; out.reserve(40);
+    std::string out;
+    out.reserve(40);
     for (std::uint8_t b : h)
     {
         out.push_back(hex[b >> 4]);
@@ -57,8 +58,7 @@ public:
 
     void handle_alert(lt::alert* a) override
     {
-        if (auto* up = lt::alert_cast<lt::state_update_alert>(a)))
-        {
+        if (auto* up = lt::alert_cast<lt::state_update_alert>(a)) {
             for (auto const& st : up->status)
             {
 #if LIBTORRENT_VERSION_NUM >= 20000
@@ -91,8 +91,8 @@ struct intf_sys_t
 };
 
 /*-------------------------------------------------------
- * Эти функции **должны** называться ровно так,
- * чтобы module.cpp их нашёл и не было дублирования symbols
+ * Эти функции должны называться ровно так,
+ * чтобы module.cpp их нашёл
  *------------------------------------------------------*/
 int InterfaceOpen(vlc_object_t* obj)
 {
