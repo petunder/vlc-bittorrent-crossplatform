@@ -14,7 +14,7 @@ else
   ORIG_HOME="$HOME"
 fi
 
-say "Устанавливаем плагин от имени пользователя: $ORIG_USER ($ORIG_HOME)"
+say "Устанавливаем плагины от имени пользователя: $ORIG_USER ($ORIG_HOME)"
 
 # ————— Функция очистки предыдущих установок —————
 clean_old(){
@@ -23,21 +23,26 @@ clean_old(){
 
   # Берём pluginsdir из pkg-config, если доступен
   if PKG=$(pkg-config --variable=pluginsdir vlc-plugin 2>/dev/null); then
-    DIRS+=("$PKG")
+    DIRS+=("$PKG/access" "$PKG/video_filter")
   fi
 
   # Традиционные пути
   DIRS+=(
     "/usr/lib/vlc/plugins/access"
+    "/usr/lib/vlc/plugins/video_filter"
     "/usr/lib64/vlc/plugins/access"
+    "/usr/lib64/vlc/plugins/video_filter"
     "/usr/lib/x86_64-linux-gnu/vlc/plugins/access"
+    "/usr/lib/x86_64-linux-gnu/vlc/plugins/video_filter"
     "$ORIG_HOME/.local/lib/vlc/plugins/access"
+    "$ORIG_HOME/.local/lib/vlc/plugins/video_filter"
   )
 
   for d in "${DIRS[@]}"; do
     if [ -d "$d" ]; then
       say "  – очищаю $d"
       sudo rm -f "$d/libaccess_bittorrent_plugin"*.so || true
+      sudo rm -f "$d/libvideo_filter_bittorrent_overlay"*.so || true
     fi
   done
 
@@ -57,16 +62,16 @@ if ! command -v vlc &>/dev/null; then
 fi
 VLC_BIN="$(command -v vlc)"
 if [[ "$VLC_BIN" == /snap/* ]]; then
-  err "Snap-версия VLC не поддерживает плагины. Пожалуйста, установите классическую версию (apt/flatpak и т.п.)."
+  err "Snap-версия VLC не поддерживает плагины. Установите классическую версию."
 fi
 say "Обнаружен классический VLC: $VLC_BIN"
 
 # ————— Устанавливаем зависимости для сборки —————
-say "Устанавливаем зависимости для сборки плагина..."
+say "Устанавливаем зависимости для сборки плагинов..."
 sudo apt update
 sudo apt install -y build-essential cmake pkg-config libvlc-dev libvlccore-dev libtorrent-rasterbar-dev
 
-# ————— Сборка плагина —————
+# ————— Сборка плагинов —————
 say "Собираем проект..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
@@ -76,29 +81,34 @@ cd "$BUILD_DIR"
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j"$(nproc)"
 
-# Ищем скомпилированный .so
-PLUGIN="$(find "$BUILD_DIR/src" -maxdepth 1 -type f -name 'libaccess_bittorrent_plugin*.so' | head -n1)"
-[ -f "$PLUGIN" ] || err "Не найден скомпилированный плагин в $BUILD_DIR/src. Проверьте вывод make."
+# Ищем скомпилированные .so
+ACCESS_PLUGIN=$(find "$BUILD_DIR/src" -maxdepth 1 -type f -name 'access_bittorrent_plugin*.so' | head -n1)
+FILTER_PLUGIN=$(find "$BUILD_DIR/src" -maxdepth 1 -type f -name 'video_filter_bittorrent_overlay*.so' | head -n1)
 
-# ————— Подготовка директории установки —————
+[ -f "$ACCESS_PLUGIN" ] || err "Не найден access-плагин в $BUILD_DIR/src. Проверьте вывод make."
+[ -f "$FILTER_PLUGIN" ] || err "Не найден video_filter-плагин в $BUILD_DIR/src. Проверьте вывод make."
+
+# ————— Подготовка директорий установки —————
 if PKG=$(pkg-config --variable=pluginsdir vlc-plugin 2>/dev/null); then
   BASE="$PKG"
 else
   ARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo "x86_64-linux-gnu")
   BASE="/usr/lib/${ARCH}/vlc/plugins"
 fi
-DEST="$BASE/access"
+DEST_ACCESS="$BASE/access"
+DEST_FILTER="$BASE/video_filter"
 
-say "Создаём папку для плагинов: $DEST"
-sudo mkdir -p "$DEST"
+say "Создаём папки для плагинов: $DEST_ACCESS и $DEST_FILTER"
+sudo mkdir -p "$DEST_ACCESS" "$DEST_FILTER"
 
-say "Копируем плагин в $DEST"
-sudo install -m644 "$PLUGIN" "$DEST/"
+say "Копируем плагины в директории"
+sudo install -m644 "$ACCESS_PLUGIN" "$DEST_ACCESS/"
+sudo install -m644 "$FILTER_PLUGIN" "$DEST_FILTER/"
 
 # ————— Обновление кэша VLC (если доступно) —————
-say "Обновляем кэш плагинов (если доступно)…"
+say "Обновляем кэш плагинов (если доступно)..."
 if command -v vlc-cache-gen &>/dev/null; then
   sudo vlc-cache-gen -f "$BASE" || true
 fi
 
-say "Установка завершена. Перезапустите VLC под пользователем $ORIG_USER и проверьте доступность торрентов." 
+say "Установка завершена. Перезапустите VLC под пользователем $ORIG_USER и проверьте оба плагина."
