@@ -23,7 +23,7 @@
 #include "metadata.h"         // stream_directory
 #include "data.h"             // stream_extractor
 #include "magnetmetadata.h"   // access
-#include "interface.h"        // interface (Logger)
+#include "overlay.h"          // overlay (Logger)
 
 // ────────────────────────────────────────────────────────────
 //                    Описание VLC-модуля
@@ -56,10 +56,11 @@ vlc_module_begin()
         add_shortcut("file", "magnet")
         set_callbacks(MagnetMetadataOpen, MagnetMetadataClose)
 
-    /* ──────────────── под-модуль: interface (logger) ───────────── */
+    /* ──────────────── под-модуль: overlay (logger) ───────────── */
     add_submodule()
-        set_description("BitTorrent status debug logger (console-only)")
-        set_capability("interface", 99)
-        set_callbacks(InterfaceOpen, InterfaceClose)
+        set_shortname("bittorrent_overlay")
+        set_description("BitTorrent status overlay")
+        set_capability("video_filter", 10) // Приоритет > 0
+        set_callbacks(Open, Close) // Управление жизненным циклом
 
 vlc_module_end()
