@@ -46,7 +46,9 @@ add_library(
         session.cpp
         vlc.cpp
 )
-set_target_properties(access_bittorrent_plugin PROPERTIES PREFIX "lib" OUTPUT_NAME "access_bittorrent")
+# --- ИЗМЕНЕНИЕ: ЗАДАЕМ ПРАВИЛЬНОЕ ИМЯ ВЫХОДНОГО ФАЙЛА ---
+# Имя должно заканчиваться на _plugin, чтобы VLC его распознал.
+set_target_properties(access_bittorrent_plugin PROPERTIES PREFIX "lib" OUTPUT_NAME "access_bittorrent_plugin")
 
 # ПЛАГИН №2: Видеофильтр-оверлей
 add_library(
@@ -54,7 +56,8 @@ add_library(
     MODULE
         overlay.cpp
 )
-set_target_properties(overlay_plugin PROPERTIES PREFIX "lib" OUTPUT_NAME "bittorrent_overlay")
+# --- ИЗМЕНЕНИЕ: ЗАДАЕМ ПРАВИЛЬНОЕ ИМЯ ВЫХОДНОГО ФАЙЛА ---
+set_target_properties(overlay_plugin PROPERTIES PREFIX "lib" OUTPUT_NAME "bittorrent_overlay_plugin")
 
 
 # --- Линковка для обоих плагинов ---
@@ -108,7 +111,11 @@ install(CODE "
     execute_process(COMMAND ${CMAKE_COMMAND} -E make_directory ${VLC_ACCESS_PLUGIN_DIR})
     execute_process(COMMAND ${CMAKE_COMMAND} -E make_directory ${VLC_VIDEO_FILTER_PLUGIN_DIR})
     if (\"${VLC_IS_SNAP}\")
-        # ... (логика для snap остается прежней)
+        # Логика для snap
+        message(STATUS \"VLC snap detected → plugins copied to ${VLC_PLUGIN_INSTALL_DIR}\")
+        file(APPEND \$ENV{HOME}/.profile
+             \"\\n# added by vlc-bittorrent\\nexport VLC_PLUGIN_PATH=${VLC_PLUGIN_INSTALL_DIR}:\$VLC_PLUGIN_PATH\\n\")
+        message(STATUS \"Added VLC_PLUGIN_PATH to ~/.profile\")
     else ()
         message(STATUS \"Classic VLC → plugins copied to respective directories\")
         execute_process(
@@ -119,22 +126,20 @@ install(CODE "
 ")
 
 # --- Настройки компиляции ---
-# --- ИЗМЕНЕНИЕ: ДОБАВЛЕНЫ УНИКАЛЬНЫЕ ОПРЕДЕЛЕНИЯ MODULE_STRING ---
 target_compile_definitions(
     access_bittorrent_plugin
     PRIVATE
-        -DMODULE_STRING=\"bittorrent\" # Уникальное имя для плагина доступа
+        -DMODULE_STRING=\"bittorrent\"
         -D__PLUGIN__
         -DPACKAGE=\"vlc-bittorrent\"
 )
 target_compile_definitions(
     overlay_plugin
     PRIVATE
-        -DMODULE_STRING=\"bittorrent_overlay\" # Уникальное имя для плагина оверлея
+        -DMODULE_STRING=\"bittorrent_overlay\"
         -D__PLUGIN__
         -DPACKAGE=\"vlc-bittorrent\"
 )
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 # --- Общие свойства для обоих плагинов ---
 foreach(PLUGIN_TARGET access_bittorrent_plugin overlay_plugin)
