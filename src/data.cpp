@@ -15,72 +15,70 @@
  *      b) Вызывает set_piece_priority(), чтобы приказать libtorrent немедленно
  *         начать загрузку данных с нового места с наивысшим приоритетом.
  * 4.  При закрытии (DataClose) он очищает переменную активного торрента.
+ * Реализация потока с использованием механизма кеширования VLC.
+ * Гибридный подход: блокировка на старте, асинхронное чтение после.
  */
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
+
 #include <memory>
 #include <stdexcept>
+#include <atomic>
 
-#include "vlc.h" // Unified header
+#include "vlc.h"
 #include "data.h"
 #include "download.h"
 
-#define MIN_CACHING_TIME 10000
-// --- НАЧАЛО ИЗМЕНЕНИЯ: КОНСТАНТА ДЛЯ ОПТИМИЗАЦИИ ПЕРЕМОТКИ ---
-#define SEEK_READAHEAD_SIZE (20 * 1024 * 1024) // 10 MB
-// --- КОНЕЦ ИЗМЕНЕНИЯ ---
-/*
-static input_thread_t *FindInput(stream_extractor_t *se)
-{
-    input_thread_t *p_input = (input_thread_t *)var_Get(VLC_OBJECT(se), "input", VLC_VAR_ADDRESS);
-    if (p_input)
-        vlc_object_hold(p_input);
-    return p_input;
-}
-
-static input_thread_t *FindInput(stream_extractor_t *se)
-{
-    return (input_thread_t *)vlc_object_find(VLC_OBJECT(se), VLC_OBJECT_INPUT, FIND_PARENT);
-}
-*/
 struct data_sys {
     std::shared_ptr<Download> p_download;
     int i_file = 0;
     uint64_t i_pos = 0;
+
+    // Флаг, который гарантирует, что блокирующая логика
+    // для начальной буферизации сработает только один раз.
+    std::atomic<bool> is_initial_buffer_filled{false};
 };
 
 static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_size) {
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
-    if (!s || !s->p_download) return -1;
-    
-    // Проверяем, не в состоянии ли мы EOF
+    if (!s || !s->p_download) {
+        return -1; // Критическая ошибка
+    }
+
+    // Проверка на конец файла
     auto file_info = s->p_download->get_file(p_extractor->identifier);
     if (s->i_pos >= file_info.second) {
-        msg_Dbg(p_extractor, "Reached EOF at position %" PRIu64, s->i_pos);
         return 0; // EOF
     }
-    
+
+    // --- ГЛАВНАЯ ЛОГИКА ---
+    // Функция Download::read теперь всегда блокирующая, с внутренним тайм-аутом.
+    // На старте (когда is_initial_buffer_filled = false), VLC вызывает нас
+    // из своего потока кеширования. Мы блокируемся и ждем первый кусок.
+    // После старта, VLC вызывает нас из потока воспроизведения. Мы снова вызываем
+    // тот же read(), но т.к. libtorrent уже качает куски в фоне,
+    // он, скорее всего, вернет данные мгновенно или с минимальной задержкой.
+    // Если данных нет, он вернет 0, что на этом этапе уже безопасно.
     try {
-        ssize_t ret = s->p_download->read(s->i_file, (int64_t)s->i_pos, 
-                                         static_cast<char*>(p_buf), i_size);
-        
+        ssize_t ret = s->p_download->read(s->i_file, (int64_t)s->i_pos,
+                                          static_cast<char*>(p_buf), i_size);
+
         if (ret > 0) {
             s->i_pos += ret;
-            return ret;
-        } else if (ret == 0) {
-            // Данные еще не готовы, но не EOF
-            msg_Dbg(p_extractor, "Data not ready at position %" PRIu64, s->i_pos);
-            return 0;
+            // После первого успешного чтения, считаем, что буфер заполнен.
+            if (!s->is_initial_buffer_filled.load()) {
+                s->is_initial_buffer_filled = true;
+                msg_Dbg(p_extractor, "Initial buffer filled, playback starting.");
+            }
         }
-        
-        // ret < 0 - ошибка чтения
-        msg_Dbg(p_extractor, "Read error at position %" PRIu64, s->i_pos);
-        return 0; // Не возвращаем -1, чтобы VLC не прервал воспроизведение
-        
+        // Возвращаем ret как есть (может быть > 0 или 0, если данные еще не готовы)
+        return ret;
+
     } catch (const std::runtime_error& e) {
-        msg_Dbg(p_extractor, "Read failed: %s", e.what());
-        return 0;
+        // Это произойдет в основном при тайм-ауте на старте.
+        msg_Err(p_extractor, "Fatal error during read (timeout?): %s", e.what());
+        return -1; // Сигнализируем VLC, что источник неисправен.
     }
 }
 
@@ -88,36 +86,21 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
     msg_Dbg(p_extractor, "Seek requested to position %" PRIu64, i_pos);
 
-    // ШАГ 1: Сообщаем нижележащему потоку VLC о перемотке
     if (vlc_stream_Seek(p_extractor->source, i_pos)) {
-        msg_Err(p_extractor, "Underlying stream seek failed");
         return VLC_EGENERIC;
     }
 
-    // ШАГ 2: Обновляем нашу внутреннюю позицию
     s->i_pos = i_pos;
 
-    // ШАГ 3: Устанавливаем приоритет загрузки
-    if (s->p_download) {
-        msg_Dbg(p_extractor, "Setting piece priority for seeking");
-        s->p_download->set_piece_priority(s->i_file, (int64_t)s->i_pos, 50 * 1024 * 1024, 7);
-    }
+    // После перемотки нам снова нужно будет дождаться данных с новой позиции.
+    // Сбрасываем флаг, чтобы DataRead снова использовал блокирующую логику
+    // для заполнения буфера с нового места.
+    s->is_initial_buffer_filled = false;
+    msg_Dbg(p_extractor, "Resetting buffer status for seeking.");
 
-    // ШАГ 4: СБРОС ВНУТРЕННИХ ЧАСОВ VLC
-    vlc_value_t val;
-    val.p_address = NULL;
-    int result = var_Get(VLC_OBJECT(p_extractor), "input", &val);
-    
-    if (result == VLC_SUCCESS && val.p_address != NULL) {
-        input_thread_t *p_input = (input_thread_t *)val.p_address;
-        msg_Dbg(p_extractor, "Resetting input clock after seek");
-        
-        // ПРАВИЛЬНЫЙ СБРОС ЧЕРЕЗ INPUT_RESTART_ES
-        input_Control(p_input, INPUT_RESTART_ES, -VIDEO_ES);
-        
-        vlc_object_release(p_input);
-    } else {
-        msg_Warn(p_extractor, "Failed to find input thread for clock reset");
+    // Даем команду libtorrent качать с нового места с высшим приоритетом.
+    if (s->p_download) {
+        s->p_download->set_piece_priority(s->i_file, (int64_t)s->i_pos, 50 * 1024 * 1024, 7);
     }
 
     return VLC_SUCCESS;
@@ -125,42 +108,37 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
 
 static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list args) {
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
-    if (!s || !s->p_download)
-        return VLC_EGENERIC;
+    if (!s || !s->p_download) return VLC_EGENERIC;
 
     switch (i_query) {
         case STREAM_CAN_SEEK:
-        case STREAM_CAN_FASTSEEK:
             *va_arg(args, bool*) = true;
             break;
+        case STREAM_GET_SIZE:
+            *va_arg(args, uint64_t*) = s->p_download->get_file(p_extractor->identifier).second;
+            break;
+
+        // --- КЛЮЧЕВОЙ МОМЕНТ АРХИТЕКТУРЫ ---
+        case STREAM_GET_PTS_DELAY: {
+            // Запрашиваем у VLC большое время на кеширование.
+            // Это заставит его вызвать DataRead из своего потока буферизации,
+            // что делает нашу блокировку на старте безопасной.
+            int64_t caching_ms = var_InheritInteger(p_extractor, "network-caching");
+            // Просим минимум 10 секунд (10000 мс) кеширования.
+            int64_t delay_us = (caching_ms > 10000 ? caching_ms : 10000) * 1000LL;
+            *va_arg(args, int64_t*) = delay_us;
+            msg_Dbg(p_extractor, "Reporting PTS delay of %" PRId64 " us for network caching.", delay_us);
+            break;
+        }
 
         case STREAM_CAN_PAUSE:
         case STREAM_CAN_CONTROL_PACE:
             *va_arg(args, bool*) = true;
             break;
 
-        case STREAM_GET_PTS_DELAY: {
-            // Увеличиваем минимальное время кэширования для торрентов
-            int64_t nc    = var_InheritInteger(p_extractor, "network-caching");
-            int64_t delay = (nc > 3000 ? nc : 3000) * 1000LL; // Минимум 3 секунды
-            *va_arg(args, int64_t*) = delay;
-            break;
-        }
-
-        case STREAM_SET_PAUSE_STATE:
-            // здесь ничего не делаем, но и не возвращаем ошибку
-            break;
-
-        case STREAM_GET_SIZE:
-            *va_arg(args, uint64_t*) =
-                s->p_download->get_file(p_extractor->identifier).second;
-            break;
-
         default:
-            // Пробрасываем все остальные запросы (включая запросы по тайм-кодам)
             return vlc_stream_vaControl(p_extractor->source, i_query, args);
     }
-
     return VLC_SUCCESS;
 }
 
@@ -170,41 +148,33 @@ int DataOpen(vlc_object_t* p_obj) {
     ssize_t mdsz = vlc_stream_Read(p_extractor->source, md.get(), 0x100000);
     if (mdsz < 0) return VLC_EGENERIC;
 
-    msg_Info(p_obj, "[BITTORRENT_DIAG] DataOpen: Entering function for a new stream.");
-    
-    auto* s = new data_sys();
+    auto s = new (std::nothrow) data_sys();
+    if (!s) return VLC_ENOMEM;
+
     try {
         s->p_download = Download::get_download(md.get(), (size_t)mdsz, get_download_directory(p_obj), get_keep_files(p_obj));
         s->i_file = s->p_download->get_file(p_extractor->identifier).first;
-
-        std::string infohash = s->p_download->get_infohash();
-        msg_Info(p_obj, "[BITTORRENT_DIAG] DataOpen: Got infohash: %s. Setting 'bittorrent-active-hash' variable.", infohash.c_str());
-        var_SetString(p_obj, "bittorrent-active-hash", infohash.c_str());
-        msg_Dbg(p_obj, "Set active torrent hash: %s", infohash.c_str());
-
     } catch (const std::runtime_error& e) {
-        msg_Err(p_extractor, "[BITTORRENT_DIAG] Failed to add download: %s", e.what());
+        msg_Err(p_extractor, "Failed to add download: %s", e.what());
         delete s;
         return VLC_EGENERIC;
     }
-    
+
     p_extractor->p_sys = s;
     p_extractor->pf_read = DataRead;
     p_extractor->pf_seek = DataSeek;
     p_extractor->pf_control = DataControl;
 
-    msg_Info(p_obj, "[BITTORRENT_DIAG] DataOpen: Successfully configured stream extractor.");
+    msg_Dbg(p_obj, "BitTorrent data stream opened successfully.");
     return VLC_SUCCESS;
 }
 
 void DataClose(vlc_object_t* p_obj) {
     auto* p_extractor = reinterpret_cast<stream_extractor_t*>(p_obj);
-    var_SetString(p_obj, "bittorrent-active-hash", "");
-    msg_Dbg(p_obj, "Cleared active torrent hash.");
-    
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
-    if (!s) return;
-    
-    delete s;
+    if (s) {
+        delete s;
+    }
     p_extractor->p_sys = nullptr;
+    msg_Dbg(p_obj, "BitTorrent data stream closed.");
 }
