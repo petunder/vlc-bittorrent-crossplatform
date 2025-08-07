@@ -1,37 +1,35 @@
 /*****************************************************************************
- * overlay.cpp — Видеофильтр для отображения статуса BitTorrent
+ * overlay.cpp — Автономный видеофильтр для статуса BitTorrent
  * Copyright 2025 petunder
  *
  * --- РОЛЬ ФАЙЛА В ПРОЕКТЕ ---
- * Этот файл реализует модуль видеофильтра (`vfilter`). Его единственная
- * задача — отображать оверлей со статусом загрузки поверх видео.
+ * Этот файл является полностью самодостаточным плагином VLC. Он компилируется
+ * в отдельный файл (например, libbittorrent_overlay.so) и отвечает
+ * исключительно за отображение оверлея.
  *
  * --- АРХИТЕКТУРНОЕ РЕШЕНИЕ ---
- * В отличие от предыдущей неверной реализации (interface), этот модуль
- * правильно интегрируется в видео-конвейер VLC.
+ * 1.  **Независимый модуль:** Файл содержит собственный описатель
+ *     `vlc_module_begin()`, объявляя себя как `video_filter`. Это позволяет
+ *     VLC находить и загружать его как отдельный, независимый плагин.
  *
- * 1.  **Тип модуля:** Объявлен как `video_filter`, а не `interface`. Это
- *     позволяет ему работать одновременно со стандартным интерфейсом Qt.
+ * 2.  **Общий синглтон:** Для получения данных о статусе торрента, этот
+ *     плагин обращается к тому же синглтону `Session::get()`, что и
+ *     основной плагин доступа к данным. Это позволяет им безопасно
+ *     обмениваться информацией без прямых зависимостей.
  *
- * 2.  **Активация:** Фильтр активируется автоматически из `data.cpp` при
- *     открытии торрент-потока.
+ * 3.  **Прямой рендеринг:** Плагин не использует внешние зависимости
+ *     (вроде dynamicoverlay). Он самостоятельно рисует текст прямо на
+ *     видеокадре с помощью API рендеринга субтитров VLC 3.x.
  *
- * 3.  **Логика:** При создании фильтра (`Open`) запускается класс
- *     `TorrentStatusLogger`, который в отдельном потоке получает данные от
- *     libtorrent и пишет их в FIFO-канал для оверлея.
- *
- * 4.  **Обработка видео:** Основная функция фильтра (`Filter`) просто
- *     пропускает видеокадры дальше без изменений. Его существование
- *     нужно лишь для того, чтобы удерживать `TorrentStatusLogger` в памяти.
- *
- * Этот подход является каноническим для создания оверлеев в VLC.
+ * Этот подход является каноническим, надежным и решает проблему, когда
+ * VLC не мог найти под-модуль внутри уже загруженного плагина.
  *****************************************************************************/
 
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
 
-#include "overlay.h"
+#include "vlc.h"
 #include "session.h"
 
 #include <libtorrent/alert_types.hpp>
@@ -43,10 +41,24 @@
 #include <string>
 #include <atomic>
 
-// Объявляем нашу главную функцию-фильтр
-extern "C" picture_t* Filter(filter_t* p_filter, picture_t* p_pic);
+// --- Описатель модуля VLC ---
+// Предварительно объявляем функции, чтобы использовать их в set_callbacks.
+int Open(vlc_object_t*);
+void Close(vlc_object_t*);
+picture_t* Filter(filter_t*, picture_t*);
 
-namespace { // Скрываем детали реализации
+vlc_module_begin()
+    set_shortname("bittorrent_overlay")
+    set_description("BitTorrent status overlay")
+    set_category   (CAT_VIDEO)
+    set_subcategory(SUBCAT_VIDEO_VFILTER)
+    set_capability("video_filter", 10)
+    set_callbacks(Open, Close)
+vlc_module_end()
+// --- Конец описателя ---
+
+
+namespace { // Скрываем детали реализации в анонимном пространстве имен
 
 static std::string sha1_to_hex(const lt::sha1_hash& h) {
     static constexpr char hex[] = "0123456789abcdef";
@@ -58,6 +70,7 @@ static std::string sha1_to_hex(const lt::sha1_hash& h) {
     return out;
 }
 
+// Класс-поставщик статуса, который подписывается на алерты
 class StatusProvider final : public Alert_Listener {
 public:
     StatusProvider() {
@@ -100,12 +113,14 @@ private:
     std::string m_status_text;
 };
 
-} // конец анонимного пространства имен
+} // Конец анонимного пространства имен
 
+// Системная структура для хранения состояния нашего фильтра
 struct filter_sys_t {
     StatusProvider* provider;
 };
 
+// Функция, вызываемая VLC при создании экземпляра фильтра
 int Open(vlc_object_t* p_this)
 {
     filter_t* p_filter = (filter_t*)p_this;
@@ -119,12 +134,14 @@ int Open(vlc_object_t* p_this)
     }
     
     p_filter->p_sys = p_sys;
+    // Регистрируем нашу функцию Filter как обработчик видео
     p_filter->pf_video_filter = Filter;
     
-    msg_Dbg(p_filter, "BitTorrent overlay filter created");
+    msg_Dbg(p_filter, "BitTorrent overlay filter created successfully");
     return VLC_SUCCESS;
 }
 
+// Функция, вызываемая VLC при уничтожении экземпляра фильтра
 void Close(vlc_object_t* p_this)
 {
     filter_t* p_filter = (filter_t*)p_this;
@@ -136,6 +153,7 @@ void Close(vlc_object_t* p_this)
     msg_Dbg(p_filter, "BitTorrent overlay filter destroyed");
 }
 
+// Главная функция-фильтр, вызываемая для каждого видеокадра
 picture_t* Filter(filter_t* p_filter, picture_t* p_pic)
 {
     if (!p_pic) return nullptr;
@@ -147,17 +165,20 @@ picture_t* Filter(filter_t* p_filter, picture_t* p_pic)
         return p_pic;
     }
 
+    // Создаем "холст" для субтитров
     subpicture_t* p_subpicture = filter_NewSubpicture(p_filter);
     if (!p_subpicture) {
         return p_pic;
     }
     
+    // Создаем текстовый сегмент
     text_segment_t* p_segment = text_segment_New(text.c_str());
     if (!p_segment) {
         subpicture_Delete(p_subpicture);
         return p_pic;
     }
     
+    // Создаем регион, где будет отображаться текст
     subpicture_region_t* p_region = subpicture_region_New(&p_pic->format);
     if (!p_region) {
         text_segment_Delete(p_segment);
@@ -165,19 +186,18 @@ picture_t* Filter(filter_t* p_filter, picture_t* p_pic)
         return p_pic;
     }
 
+    // Настраиваем регион
     p_region->i_x = 20;
     p_region->i_y = 20;
     p_region->p_text = p_segment;
 
-    // --- ИЗМЕНЕНИЕ 1: Правильное имя поля ---
-    // В VLC 3.x поле называется p_region, а не p_first_region
+    // Прикрепляем регион к холсту субтитров
     p_subpicture->p_region = p_region;
 
-    // --- ИЗМЕНЕНИЕ 2: Правильное количество аргументов ---
-    // picture_BlendSubpicture требует ТРИ аргумента: картинку, фильтр и субтитр
+    // "Впечатываем" наш холст с текстом на видеокадр
     picture_BlendSubpicture(p_pic, p_filter, p_subpicture);
 
-    // Очищаем subpicture ПОСЛЕ того, как он был использован для смешивания
+    // Очищаем память, выделенную для субтитра
     subpicture_Delete(p_subpicture);
 
     return p_pic;
