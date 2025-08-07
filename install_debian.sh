@@ -82,7 +82,7 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j"$(nproc)"
 
 # Ищем скомпилированные .so
-ACCESS_PLUGIN=$(find "$BUILD_DIR/src" -maxdepth 1 -type f -name 'access_bittorrent_plugin*.so' | head -n1)
+ACCESS_PLUGIN=$(find "$BUILD_DIR/src" -maxdepth 1 -type f -name 'libaccess_bittorrent_plugin*.so' | head -n1)
 FILTER_PLUGIN=$(find "$BUILD_DIR/src" -maxdepth 1 -type f -name 'video_filter_bittorrent_overlay*.so' | head -n1)
 
 [ -f "$ACCESS_PLUGIN" ] || err "Не найден access-плагин в $BUILD_DIR/src. Проверьте вывод make."
