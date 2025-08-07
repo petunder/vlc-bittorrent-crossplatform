@@ -12,7 +12,7 @@
 #endif
 
 #include "vlc.h"                 // unified VLC headers
-#include "interface.h"           // декларации InterfaceOpen/InterfaceClose :contentReference[oaicite:2]{index=2}
+#include "interface.h"           // декларации InterfaceOpen/InterfaceClose
 
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/torrent_status.hpp>
@@ -33,6 +33,12 @@
 #include "session.h"             // Session::get() и Alert_Listener
 
 namespace lt = libtorrent;
+
+// --- НАЧАЛО ИЗМЕНЕНИЯ 1: ДЕЛАЕМ ГЛОБАЛЬНЫЙ ФЛАГ ВИДИМЫМ ---
+// Объявляем флаг из download.cpp как внешний (extern),
+// чтобы компоновщик знал, где его найти.
+extern std::atomic<bool> g_is_in_blocking_read;
+// --- КОНЕЦ ИЗМЕНЕНИЯ 1 ---
 
 /* sha1_hash → 40-символьная hex-строка */
 static std::string sha1_to_hex(const lt::sha1_hash& h)
@@ -55,24 +61,32 @@ public:
     explicit TorrentStatusLogger(vlc_object_t* obj)
       : m_intf(obj), m_running(true), m_thread(&TorrentStatusLogger::loop, this)
     {
-        // 1) Подписка на алерты
-        Session::get()->register_alert_listener(this);
+        // --- НАЧАЛО ИЗМЕНЕНИЯ 2: ИСПРАВЛЕНА ЛОГИКА СОЗДАНИЯ FIFO ---
+        // 1) Определить путь к FIFO
+        m_fifo_path = "/tmp/vlc-bittorrent-overlay.fifo";
 
-        // 2) Включить spu/dynamicoverlay
-        playlist_t* pl = pl_Get(reinterpret_cast<intf_thread_t*>(m_intf));
-        var_SetString(pl, "sub-filter", "dynamicoverlay");
+        // 2) Удалить старый файл, если он существует
+        ::unlink(m_fifo_path.c_str());
 
-        // 3) Определить путь к FIFO
-        char* fifo = var_GetString(pl, "dynamicoverlay-file");
-        m_fifo_path = fifo ? fifo : "/tmp/vlc-bittorrent-overlay.fifo";
-        free(fifo);
-
-        // 4) Создать и открыть FIFO
-        if (::mkfifo(m_fifo_path.c_str(), 0666) && errno != EEXIST)
+        // 3) Создать FIFO
+        if (::mkfifo(m_fifo_path.c_str(), 0666) != 0) {
             msg_Err(m_intf, "mkfifo(%s): %s", m_fifo_path.c_str(), strerror(errno));
-        m_fifo_fd = ::open(m_fifo_path.c_str(), O_WRONLY | O_NONBLOCK);
-        if (m_fifo_fd < 0)
-            msg_Warn(m_intf, "open(%s): %s", m_fifo_path.c_str(), strerror(errno));
+            m_fifo_fd = -1;
+        } else {
+            m_fifo_fd = ::open(m_fifo_path.c_str(), O_WRONLY | O_NONBLOCK);
+            if (m_fifo_fd < 0)
+                msg_Warn(m_intf, "open(%s): %s", m_fifo_path.c_str(), strerror(errno));
+        }
+
+        // 4) Сообщить VLC путь к файлу
+        var_SetString(m_intf, "dynamicoverlay-file", m_fifo_path.c_str());
+
+        // 5) И только теперь включить сам фильтр
+        var_SetString(m_intf, "sub-filter", "dynamicoverlay");
+        // --- КОНЕЦ ИЗМЕНЕНИЯ 2 ---
+
+        // Подписка на алерты
+        Session::get()->register_alert_listener(this);
     }
 
     ~TorrentStatusLogger() override
@@ -83,6 +97,10 @@ public:
             m_thread.join();
         if (m_fifo_fd >= 0)
             ::close(m_fifo_fd);
+        // --- НАЧАЛО ИЗМЕНЕНИЯ 3: ОЧИСТКА ---
+        // Удаляем FIFO при закрытии
+        ::unlink(m_fifo_path.c_str());
+        // --- КОНЕЦ ИЗМЕНЕНИЯ 3 ---
     }
 
     // вызывается в потоке libtorrent
@@ -120,7 +138,7 @@ private:
     std::atomic<bool>            m_running;
     std::thread                  m_thread;
     std::string                  m_fifo_path;
-    int                           m_fifo_fd;
+    int                          m_fifo_fd = -1; // Инициализируем
 
     // loop: 1 Hz отправляет snapshot в FIFO
     void loop()
@@ -128,6 +146,14 @@ private:
         using namespace std::chrono_literals;
         while (m_running) {
             std::this_thread::sleep_for(1s);
+
+            // --- НАЧАЛО ИЗМЕНЕНИЯ 4: ПРОВЕРКА ФЛАГА БЛОКИРОВКИ ---
+            // Если сейчас идет блокирующее скачивание, не делаем ничего,
+            // чтобы не мешать основному потоку.
+            if (g_is_in_blocking_read) {
+                continue;
+            }
+            // --- КОНЕЦ ИЗМЕНЕНИЯ 4 ---
 
             std::vector<std::string> snap;
             {
@@ -139,6 +165,7 @@ private:
             for (auto const& line : snap) {
                 std::string cmd = "0 " + line + "\n";
                 ssize_t written = ::write(m_fifo_fd, cmd.c_str(), cmd.size());
+                // Игнорируем ошибки записи, например, если VLC еще не успел прочитать
                 (void)written;
             }
         }
