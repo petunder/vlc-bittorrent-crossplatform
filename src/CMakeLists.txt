@@ -55,6 +55,7 @@ add_library(
     overlay_plugin
     MODULE
         overlay.cpp
+        session.cpp
 )
 # --- ИЗМЕНЕНИЕ: ЗАДАЕМ ПРАВИЛЬНОЕ ИМЯ ВЫХОДНОГО ФАЙЛА ---
 set_target_properties(overlay_plugin PROPERTIES PREFIX "lib" OUTPUT_NAME "bittorrent_overlay_plugin")
