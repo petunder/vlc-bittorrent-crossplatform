@@ -56,11 +56,4 @@ vlc_module_begin()
         add_shortcut("file", "magnet")
         set_callbacks(MagnetMetadataOpen, MagnetMetadataClose)
 
-    /* ──────────────── под-модуль: overlay (logger) ───────────── */
-    add_submodule()
-        set_shortname("bittorrent_overlay")
-        set_description("BitTorrent status overlay")
-        set_capability("video_filter", 10) // Приоритет > 0
-        set_callbacks(Open, Close) // Управление жизненным циклом
-
 vlc_module_end()
