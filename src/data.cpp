@@ -164,6 +164,9 @@ int DataOpen(vlc_object_t* p_obj) {
     p_extractor->pf_read = DataRead;
     p_extractor->pf_seek = DataSeek;
     p_extractor->pf_control = DataControl;
+    
+    // Автоматически включаем оверлей и стандартный фильтр dynamicoverlay
+    var_SetString(p_obj, "sub-filter", "bittorrent_overlay:dynamicoverlay");
 
     msg_Dbg(p_obj, "BitTorrent data stream opened successfully.");
     return VLC_SUCCESS;
