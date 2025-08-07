@@ -41,8 +41,8 @@ clean_old(){
   for d in "${DIRS[@]}"; do
     if [ -d "$d" ]; then
       say "  – очищаю $d"
-      sudo rm -f "$d/libaccess_bittorrent_plugin"*.so || true
-      sudo rm -f "$d/libvideo_filter_bittorrent_overlay"*.so || true
+      sudo rm -f "$d/libaccess_bittorrent"*.so || true
+      sudo rm -f "$d/libbittorrent_overlay"*.so || true
     fi
   done
 
@@ -82,11 +82,11 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j"$(nproc)"
 
 # Ищем скомпилированные .so
-ACCESS_PLUGIN=$(find "$BUILD_DIR/src" -maxdepth 1 -type f -name 'libaccess_bittorrent_plugin*.so' | head -n1)
-FILTER_PLUGIN=$(find "$BUILD_DIR/src" -maxdepth 1 -type f -name 'video_filter_bittorrent_overlay*.so' | head -n1)
+ACCESS_PLUGIN=$(find "$BUILD_DIR/src" -maxdepth 1 -type f -name 'libaccess_bittorrent'*.so | head -n1)
+FILTER_PLUGIN=$(find "$BUILD_DIR/src" -maxdepth 1 -type f -name 'libbittorrent_overlay'*.so | head -n1)
 
-[ -f "$ACCESS_PLUGIN" ] || err "Не найден access-плагин в $BUILD_DIR/src. Проверьте вывод make."
-[ -f "$FILTER_PLUGIN" ] || err "Не найден video_filter-плагин в $BUILD_DIR/src. Проверьте вывод make."
+[ -f "$ACCESS_PLUGIN" ] || err "Не найден access-плагин (libaccess_bittorrent*.so) в $BUILD_DIR/src. Проверьте вывод make."
+[ -f "$FILTER_PLUGIN" ] || err "Не найден video_filter-плагин (libbittorrent_overlay*.so) в $BUILD_DIR/src. Проверьте вывод make."
 
 # ————— Подготовка директорий установки —————
 if PKG=$(pkg-config --variable=pluginsdir vlc-plugin 2>/dev/null); then
