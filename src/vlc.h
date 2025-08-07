@@ -39,6 +39,7 @@
 #include <vlc_url.h>
 #include <vlc_variables.h>
 #include <vlc_filter.h>
+#include <vlc_subpicture.h>
 // --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
 #pragma GCC diagnostic pop
