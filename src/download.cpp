@@ -3,28 +3,41 @@
  * Copyright 2016-2018 Johan Gunnarsson
  * Copyright 2025 petunder
  *
- * Этот файл является ядром логики BitTorrent-клиента в плагине.
- * Его основные задачи:
+ * Этот файл является ядром логики BitTorrent-клиента в плагине. Он
+ * инкапсулирует одну торрент-сессию (загрузку) в классе `Download`. Этот
+ * модуль напрямую взаимодействует с библиотекой libtorrent.
  *
- * 1.  **Управление загрузками (Download):**
- *     - Создание и управление объектами `Download`, представляющими одну торрент-сессию.
- *     - Реализация синглтона для объектов `Download` для предотвращения дублирования загрузок одного и того же торрента.
+ * Ключевая функция этого модуля — `Download::read()`. В финальной архитектуре
+ * эта функция является **БЛОКИРУЮЩЕЙ С ТАЙМ-АУТОМ**. Она спроектирована
+ * для работы в связке с механизмом сетевого кеширования VLC, который
+ * запрашивается в `data.cpp`.
  *
- * 2.  **Обработка метаданных:**
- *     - Получение метаданных как из `.torrent` файлов, так и по magnet-ссылкам.
- *     - Реализация механизма кеширования метаданных для magnet-ссылок.
- *     - **Использование резервного списка публичных трекеров, если в magnet-ссылке они отсутствуют.**
+ * Логика работы следующая:
  *
- * 3.  **Чтение данных:**
- *     - Реализация функции `read()`, которая позволяет VLC-плагину запрашивать фрагменты (piece) файла.
- *     - Управление приоритетами загрузки частей файла для обеспечения плавного воспроизведения.
+ * 1.  **Начало воспроизведения:** `data.cpp` через `DataControl` просит VLC
+ *     выделить время на кеширование. VLC запускает специальный поток
+ *     буферизации и из него вызывает `DataRead`.
  *
- * 4.  **Взаимодействие с libtorrent 1.2.x:**
- *     - Добавление торрентов в сессию `libtorrent::session`.
- *     - Использование `Alert_Listener` для асинхронной обработки событий от libtorrent (например, окончание загрузки куска, получение метаданных).
+ * 2.  **Блокировка:** `DataRead` вызывает `Download::read()`. Эта функция
+ *     проверяет, есть ли нужный кусок торрента на диске. Если нет, она
+ *     **блокирует поток**, ожидая, пока libtorrent скачает этот кусок.
  *
- * Этот модуль абстрагирует сложность работы с libtorrent, предоставляя простое API
- * для верхнеуровневых модулей плагина (data.cpp, metadata.cpp, magnetmetadata.cpp).
+ * 3.  **Защита от зависания:** Блокировка не вечна. Она ограничена
+ *     тайм-аутом `PIECE_READ_TIMEOUT` (например, 60 секунд). Если за это
+ *     время кусок не скачался (торрент "мертвый" или очень медленный),
+ *     функция бросает исключение `std::runtime_error`.
+ *
+ * 4.  **Обработка ошибки:** Исключение перехватывается в `data.cpp`, который
+ *     возвращает VLC ошибку (-1). VLC корректно сообщает пользователю,
+ *     что не может открыть источник.
+ *
+ * 5.  **Успешное чтение:** Если кусок скачался вовремя, `read()` читает из
+ *     него данные и возвращает их. VLC заполняет свой кеш и начинает
+ *     воспроизведение, как только буфер заполнен.
+ *
+ * Этот подход решает главную дилемму: он позволяет дождаться данных на
+ * старте (удовлетворяя требование VLC), но делает это в безопасном потоке,
+ * не замораживая интерфейс плеера.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -51,7 +64,7 @@
 #include <libtorrent/alert.hpp>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/create_torrent.hpp>
-#include <libtorrent/hex.hpp> // Для lt::to_hex
+#include <libtorrent/hex.hpp>
 #include <libtorrent/magnet_uri.hpp>
 #include <libtorrent/peer_request.hpp>
 #include <libtorrent/session.hpp>
@@ -72,19 +85,11 @@
 #define PRIO_HIGHER 6
 #define PRIO_HIGH 5
 
-namespace lt = libtorrent;
+// Тайм-аут в секундах для ожидания одного куска.
+// Если за это время ничего не скачалось, read() вернет ошибку.
+#define PIECE_READ_TIMEOUT 60
 
-// --- НАЧАЛО ИЗМЕНЕНИЯ 1: ГЛОБАЛЬНЫЙ ФЛАГ-СВЕТОФОР ---
-// Этот флаг будет виден в src/interface.cpp, так как они компилируются вместе.
-std::atomic<bool> g_is_in_blocking_read(false);
-// Удобный RAII-класс для управления флагом.
-// Гарантирует, что флаг будет сброшен, даже если произойдет исключение.
-class BlockingReadGuard {
-public:
-    BlockingReadGuard() { g_is_in_blocking_read = true; }
-    ~BlockingReadGuard() { g_is_in_blocking_read = false; }
-};
-// --- КОНЕЦ ИЗМЕНЕНИЯ 1 ---
+namespace lt = libtorrent;
 
 template <typename T> class vlc_interrupt_guard {
 public:
@@ -259,7 +264,7 @@ Download::Download(std::mutex& mtx, lt::add_torrent_params& atp, bool k)
     m_th = m_session->add_torrent(atp);
     if (!m_th.is_valid())
         throw std::runtime_error("Failed to add torrent");
-    
+
     if (m_th.is_valid() && !atp.trackers.empty()) {
         std::vector<lt::announce_entry> announce_entries;
         for (const auto& url : atp.trackers) {
@@ -306,9 +311,7 @@ ssize_t Download::read(int file, int64_t fileoff, char* buf, size_t buflen,
                         (int64_t)buflen, filesz - fileoff }));
     if (part.length <= 0) return 0;
 
-    // --- НАЧАЛО ИСПРАВЛЕНИЯ ---
-
-    // ШАГ 1: ВСЕГДА устанавливаем приоритеты, чтобы libtorrent знал, что качать.
+    // ШАГ 1: Устанавливаем приоритеты, чтобы libtorrent начал качать нужные данные.
     set_piece_priority(file, fileoff, part.length, PRIO_HIGHEST);
 
     int64_t p01 = std::max(
@@ -322,16 +325,35 @@ ssize_t Download::read(int file, int64_t fileoff, char* buf, size_t buflen,
         (int64_t)32 * MB);
     set_piece_priority(file, fileoff, (int)p5, PRIO_HIGH);
 
-    // ШАГ 2: ПРОВЕРЯЕМ, есть ли уже нужная нам часть.
+    // ШАГ 2: Проверяем, есть ли уже нужная нам часть.
     if (!m_th.have_piece(part.piece)) {
-        BlockingReadGuard guard;
-        download(part, progress_cb);
-    } // Теперь guard уничтожается здесь, и флаг сбрасывается правильно.
+        // Если части нет, мы БЛОКИРУЕМСЯ и ждем ее скачивания.
+        DownloadPiecePromise dlprom(m_th.info_hash(), part.piece);
+        AlertSubscriber<DownloadPiecePromise> sub(m_session, &dlprom);
+        auto f = dlprom.get_future();
 
-    // ШАГ 3: Если мы дошли сюда, значит часть скачана.
-    // Выполняем чтение. Блокировка здесь будет минимальной.
+        if (progress_cb) progress_cb(0.0);
+
+        // Ждем не дольше, чем указано в тайм-ауте.
+        auto status = f.wait_for(std::chrono::seconds(PIECE_READ_TIMEOUT));
+        if (status == std::future_status::timeout) {
+            // Если время вышло, бросаем исключение, которое поймает data.cpp.
+            throw std::runtime_error("Timeout waiting for piece to download");
+        }
+
+        // Если скачалось, проверяем на другие ошибки.
+        f.get();
+        if (progress_cb) progress_cb(100.0);
+    }
+    
+    // Если данных по-прежнему нет (например, из-за ошибки в libtorrent),
+    // возвращаем 0, чтобы не зацикливаться.
+    if (!m_th.have_piece(part.piece)) {
+        return 0;
+    }
+
+    // ШАГ 3: Если мы дошли сюда, значит часть скачана. Выполняем чтение с диска.
     return read(part, buf, buflen);
-    // --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 }
 
 void Download::set_piece_priority(int file, int64_t off, int size,
@@ -405,9 +427,8 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
     lt::add_torrent_params atp;
     atp.save_path = save_path;
 
-    using namespace lt::torrent_flags;
-    atp.flags &= ~auto_managed;
-    atp.flags &= ~paused;
+    atp.flags &= ~lt::torrent_flags::auto_managed;
+    atp.flags &= ~lt::torrent_flags::paused;
 
     lt::error_code ec;
     lt::parse_magnet_uri(url, atp, ec);
@@ -439,11 +460,11 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
         atp.ti = std::make_shared<lt::torrent_info>(path, std::ref(ec_cache));
 #endif
         if (ec_cache) {
-            atp.ti = nullptr;
+            atp.ti.reset();
             auto metadata = Download::get_download(atp, true)->get_metadata(cb);
 
             std::ofstream os(path, std::ios::binary | std::ios::trunc);
-            os.write(metadata->data(), metadata->size());
+            os.write(metadata->data(), (std::streamsize)metadata->size());
             os.close();
 
             return metadata;
@@ -501,16 +522,15 @@ std::shared_ptr<Download> Download::get_download(
     lt::add_torrent_params atp;
     atp.save_path = sp;
 
-    using namespace lt::torrent_flags;
-    atp.flags &= ~auto_managed;
-    atp.flags &= ~paused;
-    atp.flags &= ~duplicate_is_error;
+    atp.flags &= ~lt::torrent_flags::auto_managed;
+    atp.flags &= ~lt::torrent_flags::paused;
+    atp.flags &= ~lt::torrent_flags::duplicate_is_error;
 
     lt::error_code ec;
 #if LIBTORRENT_VERSION_NUM < 10200
-    atp.ti = boost::make_shared<lt::torrent_info>(md, mdsz, boost::ref(ec));
+    atp.ti = boost::make_shared<lt::torrent_info>(md, (int)mdsz, boost::ref(ec));
 #else
-    atp.ti = std::make_shared<lt::torrent_info>(md, mdsz, std::ref(ec));
+    atp.ti = std::make_shared<lt::torrent_info>(md, (int)mdsz, std::ref(ec));
 #endif
     if (ec) throw std::runtime_error("Failed to parse metadata");
     return Download::get_download(atp, k);
@@ -573,9 +593,7 @@ void Download::download_metadata(MetadataProgressCb cb)
         return;
 
     MetadataDownloadPromise dlprom(m_th.info_hash());
-    // --- НАЧАЛО ИЗМЕНЕНИЯ: ИСПРАВЛЕНА ОШИБКА ТИПА ШАБЛОНА ---
     AlertSubscriber<MetadataDownloadPromise> sub(m_session, &dlprom);
-    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
     vlc_interrupt_guard<MetadataDownloadPromise> intrguard(dlprom);
 
     auto f = dlprom.get_future();
@@ -627,10 +645,7 @@ ssize_t Download::read(lt::peer_request part, char* buf, size_t buflen)
     return (ssize_t)len;
 }
 
-// --- НАЧАЛО ИЗМЕНЕНИЯ: НОВАЯ ПУБЛИЧНАЯ ФУНКЦИЯ ---
 void Download::set_piece_priority(int file, int64_t off, int size, int priority)
 {
-    // Просто вызываем приватный метод с правильным типом
     set_piece_priority(file, off, size, (libtorrent::download_priority_t)priority);
 }
-// --- КОНЕЦ ИЗМЕНЕНИЯ ---
