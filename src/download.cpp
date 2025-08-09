@@ -53,6 +53,7 @@
 #include <stdexcept>
 #include <iterator>
 #include <vector>
+#include <map>
 
 #include "download.h"
 #include "session.h"
@@ -71,6 +72,7 @@
 #include <libtorrent/sha1_hash.hpp>
 #include <libtorrent/torrent_handle.hpp>
 #include <libtorrent/torrent_info.hpp>
+#include <libtorrent/torrent_status.hpp>
 #include <libtorrent/version.hpp>
 #include <libtorrent/torrent_flags.hpp>
 #pragma GCC diagnostic pop
@@ -571,6 +573,27 @@ std::string Download::get_infohash()
 lt::torrent_handle Download::get_handle()
 {
     return m_th;
+}
+
+/* отдаём реальный статус для оверлея */
+bool Download::query_status(BtOverlayStatus &out)
+{
+    if (!m_th.is_valid())
+        return false;
+
+#if LIBTORRENT_VERSION_NUM >= 10100
+    auto flags = lt::torrent_handle::query_name
+               | lt::torrent_handle::query_accurate_download_counters;
+    lt::torrent_status st = m_th.status(flags);
+#else
+    lt::torrent_status st = m_th.status();
+#endif
+
+    out.progress_pct   = st.progress * 100.0;
+    out.download_kib_s = (long long)(st.download_payload_rate / 1024);
+    out.upload_kib_s   = (long long)(st.upload_payload_rate   / 1024);
+    out.peers          = st.num_peers;
+    return true;
 }
 
 std::shared_ptr<std::vector<char>> Download::get_metadata(
