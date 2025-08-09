@@ -27,6 +27,7 @@
 #include <atomic>
 
 #include "vlc.h"
+#include <vlc_variables.h>
 #include "data.h"
 #include "download.h"
 
@@ -34,6 +35,8 @@ struct data_sys {
     std::shared_ptr<Download> p_download;
     int i_file = 0;
     uint64_t i_pos = 0;
+    libvlc_int_t* libvlc = nullptr;
+    mtime_t       last_pub = 0;
 
     // Флаг, который гарантирует, что блокирующая логика
     // для начальной буферизации сработает только один раз.
@@ -50,6 +53,19 @@ static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_s
     auto file_info = s->p_download->get_file(p_extractor->identifier);
     if (s->i_pos >= file_info.second) {
         return 0; // EOF
+    }
+    // Публикуем прогресс в общую переменную libVLC для оверлея (раз в ~500 мс)
+    if (s->libvlc == nullptr) {
+        s->libvlc = vlc_object_instance(VLC_OBJECT(p_extractor));
+    }
+    mtime_t now = mdate();
+    if (now - s->last_pub >= 500000) {
+        double prog = (file_info.second > 0)
+            ? (100.0 * (double)s->i_pos / (double)file_info.second) : 0.0;
+        char ovbuf[128];
+        snprintf(ovbuf, sizeof(ovbuf), "[BT] Progress: %.2f%%", prog);
+        var_SetString((vlc_object_t*)s->libvlc, "bt_overlay_text", ovbuf);
+        s->last_pub = now;
     }
 
     // --- ГЛАВНАЯ ЛОГИКА ---
@@ -143,6 +159,10 @@ static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list arg
 }
 
 int DataOpen(vlc_object_t* p_obj) {
+    libvlc_int_t *libvlc = vlc_object_instance(p_obj);
+    var_Create((vlc_object_t*)libvlc, "bt_overlay_text", VLC_VAR_STRING);
+    var_SetString((vlc_object_t*)libvlc, "bt_overlay_text", "[BT] Starting...");
+    
     auto* p_extractor = reinterpret_cast<stream_extractor_t*>(p_obj);
     auto md = std::make_unique<char[]>(0x100000);
     ssize_t mdsz = vlc_stream_Read(p_extractor->source, md.get(), 0x100000);
@@ -173,6 +193,8 @@ int DataOpen(vlc_object_t* p_obj) {
 }
 
 void DataClose(vlc_object_t* p_obj) {
+    libvlc_int_t *libvlc = vlc_object_instance(p_obj);
+    var_SetString((vlc_object_t*)libvlc, "bt_overlay_text", "");
     auto* p_extractor = reinterpret_cast<stream_extractor_t*>(p_obj);
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
     if (s) {
