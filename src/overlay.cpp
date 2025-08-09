@@ -1,30 +1,4 @@
 /*****************************************************************************
- * overlay.cpp — Автономный видеофильтр для статуса BitTorrent
- * Copyright 2025 petunder
- *
- * --- РОЛЬ ФАЙЛА В ПРОЕКТЕ ---
- * Этот файл является полностью самодостаточным плагином VLC. Он компилируется
- * в отдельный файл (например, libbittorrent_overlay.so) и отвечает
- * исключительно за отображение оверлея.
- *
- * --- АРХИТЕКТУРНОЕ РЕШЕНИЕ ---
- * 1.  **Независимый модуль:** Файл содержит собственный описатель
- *     `vlc_module_begin()`, объявляя себя как `video_filter`. Это позволяет
- *     VLC находить и загружать его как отдельный, независимый плагин.
- *
- * 2.  **Общий синглтон:** Для получения данных о статусе торрента, этот
- *     плагин обращается к тому же синглтону `Session::get()`, что и
- *     основной плагин доступа к данным. Это позволяет им безопасно
- *     обмениваться информацией без прямых зависимостей.
- *
- * 3.  **Прямой рендеринг:** Плагин не использует внешние зависимости
- *     (вроде dynamicoverlay). Он самостоятельно рисует текст прямо на
- *     видеокадре с помощью API рендеринга субтитров VLC 3.x.
- *
- * Этот подход является каноническим, надежным и решает проблему, когда
- * VLC не мог найти под-модуль внутри уже загруженного плагина.
- *****************************************************************************/
-/*****************************************************************************
  * overlay.cpp — BitTorrent status overlay (SUB SOURCE) для VLC 3.0.x
  * Совместимо с VLC 3.0.18 (ABI 3_0_0f). Компилируется как C++.
  * Источник текста берём из переменной libVLC: "bt_overlay_text".
@@ -62,7 +36,7 @@ static subpicture_t* Render(filter_t *, mtime_t);
 // Состояние фильтра
 // ────────────────────────────────────────────────────────────
 typedef struct filter_sys_t {
-    libvlc_int_t*  p_libvlc;     // корневой объект — тут держим переменную
+    libvlc_int_t*  p_libvlc;     // корневой объект (один на процесс)
     text_style_t*  style;
     int            margin;
     unsigned       render_calls;
@@ -95,15 +69,15 @@ static int Open(vlc_object_t *p_this)
     filter_sys_t* p_sys = (filter_sys_t*)calloc(1, sizeof(filter_sys_t));
     if (!p_sys) return VLC_ENOMEM;
 
-    // Получаем корневой libVLC объект (один на процесс)
-    p_sys->p_libvlc = vlc_object_instance(p_this);
+    // Получаем libVLC через поле obj.libvlc
+    p_sys->p_libvlc = p_filter->obj.libvlc;
     if (!p_sys->p_libvlc) {
         free(p_sys);
         return VLC_EGENERIC;
     }
 
     // Гарантируем наличие переменной (если не создана — создадим пустую строковую)
-    var_Create((vlc_object_t*)p_sys->p_libvlc, "bt_overlay_text", VLC_VAR_STRING);
+    var_Create(VLC_OBJECT(p_sys->p_libvlc), "bt_overlay_text", VLC_VAR_STRING);
 
     p_sys->style = text_style_New();
     if (!p_sys->style) {
@@ -129,7 +103,6 @@ static void Close(vlc_object_t *p_this)
 
     if (p_sys) {
         if (p_sys->style) text_style_Delete(p_sys->style);
-        // Переменную на libVLC специально НЕ удаляем — она может быть общая для других модулей
         p_filter->p_sys = NULL;
         free(p_sys);
     }
@@ -145,7 +118,7 @@ static subpicture_t* Render(filter_t *p_filter, mtime_t date)
     ++p_sys->render_calls;
 
     // Берём текущий текст (var_GetString аллоцирует — нужно free())
-    char* s = var_GetString((vlc_object_t*)p_sys->p_libvlc, "bt_overlay_text");
+    char* s = var_GetString(VLC_OBJECT(p_sys->p_libvlc), "bt_overlay_text");
 
     if (s == NULL || s[0] == '\0') {
         if ((p_sys->render_calls % 120) == 0)
