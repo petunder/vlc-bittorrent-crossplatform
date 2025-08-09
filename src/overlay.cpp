@@ -33,7 +33,7 @@
 # include "config.h"
 #endif
 
-// Заголовки VLC: НЕ оборачивать в extern "C"!
+// Заголовки VLC (НЕ оборачивать в extern "C")
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_filter.h>
@@ -51,12 +51,14 @@
 #endif
 
 // Ваши C++ зависимости
-#include "session.h"
+#include "session.h" // даёт Session и Alert_Listener
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/torrent_status.hpp>
 #include <mutex>
 #include <string>
 #include <new>
+
+namespace lt = libtorrent;
 
 // ────────────────────────────────────────────────────────────
 // Прототипы SUB SOURCE
@@ -70,8 +72,12 @@ static subpicture_t* Render(filter_t *, mtime_t);
 // ────────────────────────────────────────────────────────────
 class StatusProvider final : public Alert_Listener {
 public:
-    StatusProvider() { Session::get()->register_alert_listener(this); }
-    ~StatusProvider() override { Session::get()->unregister_alert_listener(this); }
+    StatusProvider() {
+        Session::get()->register_alert_listener(this);
+    }
+    ~StatusProvider() override {
+        Session::get()->unregister_alert_listener(this);
+    }
 
     void handle_alert(lt::alert* a) override {
         if (auto* up = lt::alert_cast<lt::state_update_alert>(a)) {
@@ -79,6 +85,7 @@ public:
             s.reserve(256);
             for (auto const& st : up->status) {
                 char buf[256];
+                // скорости в KiB/s, прогресс в %
                 snprintf(buf, sizeof(buf),
                          "[BT] D:%lld KiB/s  U:%lld KiB/s  Peers:%d  Progress:%.2f%%",
                          (long long)(st.download_payload_rate / 1024),
@@ -132,13 +139,18 @@ static int Open(vlc_object_t *p_this)
 {
     filter_t *p_filter = (filter_t *)p_this;
 
+    // Назначаем рендерер субкартинки
     p_filter->pf_sub_source = Render;
 
+    // Выделяем состояние
     auto *p_sys = (filter_sys_t*)calloc(1, sizeof(filter_sys_t));
     if (!p_sys) return VLC_ENOMEM;
 
     p_sys->provider = new (std::nothrow) StatusProvider();
-    if (!p_sys->provider) { free(p_sys); return VLC_ENOMEM; }
+    if (!p_sys->provider) {
+        free(p_sys);
+        return VLC_ENOMEM;
+    }
 
     p_sys->style = text_style_New();
     if (!p_sys->style) {
@@ -146,7 +158,7 @@ static int Open(vlc_object_t *p_this)
         free(p_sys);
         return VLC_ENOMEM;
     }
-    p_sys->style->i_font_size = 24;
+    p_sys->style->i_font_size = 24; // при желании можно изменить
     p_sys->margin = 12;
 
     p_filter->p_sys = p_sys;
@@ -178,7 +190,11 @@ static subpicture_t* Render(filter_t *p_filter, mtime_t date)
 {
     auto *p_sys = (filter_sys_t*)p_filter->p_sys;
     const std::string text = p_sys->provider->text();
-    if (text.empty()) return NULL;
+
+    if (text.empty()) {
+        // Можно оставить пусто (NULL), чтобы не рисовать ничего, пока нет данных
+        return NULL;
+    }
 
     subpicture_t *spu = subpicture_New(NULL);
     if (!spu) return NULL;
@@ -200,13 +216,15 @@ static subpicture_t* Render(filter_t *p_filter, mtime_t date)
         seg->style = text_style_Duplicate(p_sys->style);
 
     r->p_text = seg;
+
+    // Для VLC 3.0.x надёжно работает TOP|LEFT
     r->i_align = SUBPICTURE_ALIGN_TOP | SUBPICTURE_ALIGN_LEFT;
     r->i_x = p_sys->margin;
     r->i_y = p_sys->margin;
 
     spu->p_region = r;
     spu->i_start  = date;
-    spu->i_stop   = date + 500000; // ~0.5 сек
+    spu->i_stop   = date + 500000; // ~0.5 сек для частых обновлений
     spu->b_ephemer = true;
 
     return spu;
