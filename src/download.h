@@ -33,6 +33,14 @@ namespace lt = libtorrent;
 using MetadataProgressCb = std::function<void(float)>;
 using DataProgressCb = std::function<void(float)>;
 
+/* компактный срез статуса для оверлея */
+struct BtOverlayStatus {
+    double     progress_pct;      // 0..100
+    long long  download_kib_s;    // КиБ/с
+    long long  upload_kib_s;      // КиБ/с
+    int        peers;             // активные пиры
+};
+
 class Download {
 
 public:
@@ -93,9 +101,11 @@ public:
     
     lt::torrent_handle get_handle();
 
-    // --- НАЧАЛО ИЗМЕНЕНИЯ: НОВАЯ ФУНКЦИЯ ДЛЯ ПЕРЕМОТКИ ---
+    // публичный метод статуса для оверлея
+    bool query_status(BtOverlayStatus &out);
+
+    // ФУНКЦИЯ ДЛЯ ПЕРЕМОТКИ ---
     void set_piece_priority(int file, int64_t off, int size, int priority);
-    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
 private:
     static std::shared_ptr<Download>
