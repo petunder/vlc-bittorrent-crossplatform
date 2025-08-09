@@ -24,181 +24,195 @@
  * Этот подход является каноническим, надежным и решает проблему, когда
  * VLC не мог найти под-модуль внутри уже загруженного плагина.
  *****************************************************************************/
+/*****************************************************************************
+ * BitTorrent status overlay as a SUB SOURCE for VLC 3.0.x
+ * Совместимо с VLC 3.0.18 (ABI 3_0_0f). Компилируется C++.
+ *****************************************************************************/
 
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
 
-#include "vlc.h"
-#include "session.h"
+// Явно просим C-линковку для API VLC при сборке C++
+#ifdef __cplusplus
+extern "C" {
+#endif
+#include <vlc_common.h>
+#include <vlc_plugin.h>
+#include <vlc_filter.h>
+#include <vlc_subpicture.h>
+#include <vlc_text_style.h>
+#ifdef __cplusplus
+}
+#endif
 
+#include <time.h>
+#include <stdlib.h>
+#include <string.h>
+
+// КРИТИЧЕСКО: без этого VLC 3.0.x не подхватит модуль (не тот символ)
+#define MODULE_NAME 3_0_0f
+#ifndef MODULE_STRING
+# define MODULE_STRING "bittorrent_overlay"
+#endif
+
+#include "session.h"
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/torrent_status.hpp>
-#include <libtorrent/sha1_hash.hpp>
-
 #include <mutex>
-#include <vector>
 #include <string>
-#include <atomic>
+#include <new>
 
-// --- Описатель модуля VLC ---
-// Предварительно объявляем функции, чтобы использовать их в set_callbacks.
-int Open(vlc_object_t*);
-void Close(vlc_object_t*);
-picture_t* Filter(filter_t*, picture_t*);
+// ────────────────────────────────────────────────────────────
+// Прототипы SUB SOURCE
+// ────────────────────────────────────────────────────────────
+static int           Open  (vlc_object_t *);
+static void          Close (vlc_object_t *);
+static subpicture_t* Render(filter_t *, mtime_t);
 
-vlc_module_begin()
-    set_shortname("bittorrent_overlay")
-    set_description("BitTorrent status overlay")
-    set_category   (CAT_VIDEO)
-    set_subcategory(SUBCAT_VIDEO_VFILTER)
-    set_capability("video_filter", 10)
-    set_callbacks(Open, Close)
-vlc_module_end()
-// --- Конец описателя ---
-
-
-namespace { // Скрываем детали реализации в анонимном пространстве имен
-
-static std::string sha1_to_hex(const lt::sha1_hash& h) {
-    static constexpr char hex[] = "0123456789abcdef";
-    std::string out; out.reserve(40);
-    for (uint8_t b : h) {
-        out.push_back(hex[b >> 4]);
-        out.push_back(hex[b & 0xF]);
-    }
-    return out;
-}
-
-// Класс-поставщик статуса, который подписывается на алерты
+// ────────────────────────────────────────────────────────────
+// Провайдер статуса BT через libtorrent alerts
+// ────────────────────────────────────────────────────────────
 class StatusProvider final : public Alert_Listener {
 public:
-    StatusProvider() {
-        Session::get()->register_alert_listener(this);
-    }
-    ~StatusProvider() override {
-        Session::get()->unregister_alert_listener(this);
-    }
+    StatusProvider() { Session::get()->register_alert_listener(this); }
+    ~StatusProvider() override { Session::get()->unregister_alert_listener(this); }
 
     void handle_alert(lt::alert* a) override {
         if (auto* up = lt::alert_cast<lt::state_update_alert>(a)) {
-            std::string status_text;
+            std::string s;
+            s.reserve(256);
             for (auto const& st : up->status) {
-#if LIBTORRENT_VERSION_NUM >= 20000
-                auto const& ih = st.info_hashes.v1;
-#else
-                auto const& ih = st.info_hash;
-#endif
                 char buf[256];
                 snprintf(buf, sizeof(buf),
-                    "[BT] D: %lld KiB/s | U: %lld KiB/s | Peers: %d | Progress: %.2f%%\n",
-                    (long long)st.download_payload_rate/1024,
-                    (long long)st.upload_payload_rate/1024,
-                    st.num_peers,
-                    st.progress*100.0f);
-                status_text += buf;
+                         "[BT] D:%lld KiB/s U:%lld KiB/s Peers:%d Progress:%.2f%%",
+                         (long long)(st.download_payload_rate / 1024),
+                         (long long)(st.upload_payload_rate   / 1024),
+                         st.num_peers,
+                         st.progress * 100.0f);
+                if (!s.empty()) s.push_back('\n');
+                s += buf;
             }
-            std::lock_guard<std::mutex> lock(m_mutex);
-            m_status_text = status_text;
+            std::lock_guard<std::mutex> lock(m_);
+            text_ = std::move(s);
         }
     }
 
-    std::string get_status() {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        return m_status_text;
+    std::string text() const {
+        std::lock_guard<std::mutex> lock(m_);
+        return text_;
     }
 
 private:
-    std::mutex m_mutex;
-    std::string m_status_text;
+    mutable std::mutex m_;
+    std::string text_;
 };
 
-} // Конец анонимного пространства имен
-
-// Системная структура для хранения состояния нашего фильтра
-struct filter_sys_t {
+// ────────────────────────────────────────────────────────────
+// Состояние фильтра
+// ────────────────────────────────────────────────────────────
+typedef struct filter_sys_t {
     StatusProvider* provider;
-};
+    text_style_t*   style;
+    int             margin;
+} filter_sys_t;
 
-// Функция, вызываемая VLC при создании экземпляра фильтра
-int Open(vlc_object_t* p_this)
+// ────────────────────────────────────────────────────────────
+// Описание модуля VLC как SUB SOURCE
+// ────────────────────────────────────────────────────────────
+vlc_module_begin()
+    set_shortname("BitTorrent Overlay")
+    set_description("Display BitTorrent status as subpicture overlay")
+    set_category   (CAT_VIDEO)
+    set_subcategory(SUBCAT_VIDEO_SUBPIC)
+    set_capability ("sub source", 0)
+    add_shortcut   (MODULE_STRING)
+    set_callbacks  (Open, Close)
+vlc_module_end()
+
+// ────────────────────────────────────────────────────────────
+// Open: инициализация
+// ────────────────────────────────────────────────────────────
+static int Open(vlc_object_t *p_this)
 {
-    filter_t* p_filter = (filter_t*)p_this;
-    auto* p_sys = new (std::nothrow) filter_sys_t();
+    filter_t *p_filter = (filter_t *)p_this;
+
+    p_filter->pf_sub_source = Render;
+
+    auto *p_sys = (filter_sys_t*)calloc(1, sizeof(*p_sys));
     if (!p_sys) return VLC_ENOMEM;
 
     p_sys->provider = new (std::nothrow) StatusProvider();
-    if (!p_sys->provider) {
-        delete p_sys;
+    if (!p_sys->provider) { free(p_sys); return VLC_ENOMEM; }
+
+    p_sys->style = text_style_New();
+    if (!p_sys->style) {
+        delete p_sys->provider;
+        free(p_sys);
         return VLC_ENOMEM;
     }
-    
+    p_sys->style->i_font_size = 24;
+    p_sys->margin = 12;
+
     p_filter->p_sys = p_sys;
-    // Регистрируем нашу функцию Filter как обработчик видео
-    p_filter->pf_video_filter = Filter;
-    
-    msg_Dbg(p_filter, "BitTorrent overlay filter created successfully");
+    msg_Dbg(p_filter, MODULE_STRING " sub source opened");
     return VLC_SUCCESS;
 }
 
-// Функция, вызываемая VLC при уничтожении экземпляра фильтра
-void Close(vlc_object_t* p_this)
+// ────────────────────────────────────────────────────────────
+// Close: освобождение
+// ────────────────────────────────────────────────────────────
+static void Close(vlc_object_t *p_this)
 {
-    filter_t* p_filter = (filter_t*)p_this;
-    auto* p_sys = (filter_sys_t*)p_filter->p_sys;
+    filter_t *p_filter = (filter_t *)p_this;
+    auto *p_sys = (filter_sys_t*)p_filter->p_sys;
+
     if (p_sys) {
-        delete p_sys->provider;
-        delete p_sys;
+        if (p_sys->style)    text_style_Delete(p_sys->style);
+        if (p_sys->provider) delete p_sys->provider;
+        free(p_sys);
+        p_filter->p_sys = NULL;
     }
-    msg_Dbg(p_filter, "BitTorrent overlay filter destroyed");
+    msg_Dbg(p_filter, MODULE_STRING " sub source closed");
 }
 
-// Главная функция-фильтр, вызываемая для каждого видеокадра
-picture_t* Filter(filter_t* p_filter, picture_t* p_pic)
+// ────────────────────────────────────────────────────────────
+// Render: выдаём субкартинку
+// ────────────────────────────────────────────────────────────
+static subpicture_t* Render(filter_t *p_filter, mtime_t date)
 {
-    if (!p_pic) return nullptr;
+    auto *p_sys = (filter_sys_t*)p_filter->p_sys;
+    const std::string text = p_sys->provider->text();
+    if (text.empty()) return NULL;
 
-    auto* p_sys = (filter_sys_t*)p_filter->p_sys;
-    std::string text = p_sys->provider->get_status();
+    subpicture_t *spu = subpicture_New(NULL);
+    if (!spu) return NULL;
 
-    if (text.empty()) {
-        return p_pic;
-    }
+    video_format_t fmt;
+    memset(&fmt, 0, sizeof(fmt));
+    fmt.i_chroma = VLC_CODEC_TEXT;
+    fmt.i_width = fmt.i_visible_width = 1280;
+    fmt.i_height = fmt.i_visible_height = 720;
+    fmt.i_sar_num = fmt.i_sar_den = 1;
 
-    // Создаем "холст" для субтитров
-    subpicture_t* p_subpicture = filter_NewSubpicture(p_filter);
-    if (!p_subpicture) {
-        return p_pic;
-    }
-    
-    // Создаем текстовый сегмент
-    text_segment_t* p_segment = text_segment_New(text.c_str());
-    if (!p_segment) {
-        subpicture_Delete(p_subpicture);
-        return p_pic;
-    }
-    
-    // Создаем регион, где будет отображаться текст
-    subpicture_region_t* p_region = subpicture_region_New(&p_pic->format);
-    if (!p_region) {
-        text_segment_Delete(p_segment);
-        subpicture_Delete(p_subpicture);
-        return p_pic;
-    }
+    subpicture_region_t *r = subpicture_region_New(&fmt);
+    if (!r) { subpicture_Delete(spu); return NULL; }
 
-    // Настраиваем регион
-    p_region->i_x = 20;
-    p_region->i_y = 20;
-    p_region->p_text = p_segment;
+    text_segment_t *seg = text_segment_New(text.c_str());
+    if (!seg) { subpicture_region_Delete(r); subpicture_Delete(spu); return NULL; }
 
-    // Прикрепляем регион к холсту субтитров
-    p_subpicture->p_region = p_region;
+    if (p_sys->style)
+        seg->style = text_style_Duplicate(p_sys->style);
 
-    // "Впечатываем" наш холст с текстом на видеокадр
-    picture_BlendSubpicture(p_pic, p_filter, p_subpicture);
+    r->p_text = seg;
+    r->i_align = SUBPICTURE_ALIGN_TOP | SUBPICTURE_ALIGN_LEFT;
+    r->i_x = p_sys->margin;
+    r->i_y = p_sys->margin;
 
-    // Очищаем память, выделенную для субтитра
-    subpicture_Delete(p_subpicture);
+    spu->p_region = r;
+    spu->i_start  = date;
+    spu->i_stop   = date + 500000; // ~0.5 сек
+    spu->b_ephemer = true;
 
-    return p_pic;
+    return spu;
 }
