@@ -22,7 +22,7 @@ along with vlc-bittorrent.  If not, see <http://www.gnu.org/licenses/>.
 #endif
 
 #include "vlc.h" // Unified header
-#include <vlc_variables.h> 
+#include <vlc_variables.h>
 #include "download.h"
 #include "magnetmetadata.h"
 
@@ -93,9 +93,10 @@ MagnetMetadataControl(stream_t* access, int query, va_list args)
 int
 MagnetMetadataOpen(vlc_object_t* p_this)
 {
-    libvlc_int_t *libvlc = vlc_object_instance(p_this);
-    var_Create((vlc_object_t*)libvlc, "bt_overlay_text", VLC_VAR_STRING);
-    var_SetString((vlc_object_t*)libvlc, "bt_overlay_text", "[BT] Fetching metadata...");
+    // Инициализация общей переменной на libVLC через поле obj.libvlc
+    libvlc_int_t *libvlc = p_this->obj.libvlc;
+    var_Create(VLC_OBJECT(libvlc), "bt_overlay_text", VLC_VAR_STRING);
+    var_SetString(VLC_OBJECT(libvlc), "bt_overlay_text", "[BT] Fetching metadata...");
 
     D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
 
@@ -130,10 +131,11 @@ MagnetMetadataOpen(vlc_object_t* p_this)
         std::unique_ptr<vlc_dialog_id, decltype(del)> dialog(nullptr, del);
 
         auto prog = [&](float progress) {
-            libvlc_int_t *libvlc = vlc_object_instance(p_this);
+            // Публикуем прогресс метаданных в bt_overlay_text
             char buf[128];
             snprintf(buf, sizeof(buf), "[BT] Metadata: %.0f%%", progress * 100.0f);
-            var_SetString((vlc_object_t*)libvlc, "bt_overlay_text", buf);
+            var_SetString(VLC_OBJECT(libvlc), "bt_overlay_text", buf);
+
             if (!dialog)
                 dialog.reset(vlc_dialog_display_progress(p_this, true, progress,
                     NULL, "Downloading metadata",
