@@ -25,6 +25,7 @@
 #include <memory>
 #include <stdexcept>
 #include <atomic>
+#include <stdio.h>
 
 #include "vlc.h"
 #include <vlc_variables.h>
@@ -60,13 +61,18 @@ static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_s
     if (s->libvlc == nullptr) {
         s->libvlc = p_extractor->obj.libvlc; // ← вместо vlc_object_instance()
     }
+    // Периодическая публикация реального статуса торрента
     mtime_t now = mdate();
-    if (now - s->last_pub >= 500000) {
-        double prog = (file_info.second > 0)
-            ? (100.0 * (double)s->i_pos / (double)file_info.second) : 0.0;
-        char ovbuf[128];
-        snprintf(ovbuf, sizeof(ovbuf), "[BT] Progress: %.2f%%", prog);
-        var_SetString(VLC_OBJECT(s->libvlc), "bt_overlay_text", ovbuf);
+    if (now - s->last_pub >= 500000) { // ~0.5 сек
+        BtOverlayStatus st{};
+        if (s->p_download->query_status(st)) {
+            char ovbuf[256];
+            // Скорости — реальные из libtorrent; прогресс — общий прогресс торрента
+            snprintf(ovbuf, sizeof(ovbuf),
+                     "[BT] D:%lld KiB/s  U:%lld KiB/s  Peers:%d  Progress:%.2f%%",
+                     st.download_kib_s, st.upload_kib_s, st.peers, st.progress_pct);
+            var_SetString(VLC_OBJECT(s->libvlc), "bt_overlay_text", ovbuf);
+        }
         s->last_pub = now;
     }
 
