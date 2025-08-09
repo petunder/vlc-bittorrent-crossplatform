@@ -35,6 +35,7 @@ struct data_sys {
     std::shared_ptr<Download> p_download;
     int i_file = 0;
     uint64_t i_pos = 0;
+
     libvlc_int_t* libvlc = nullptr;
     mtime_t       last_pub = 0;
 
@@ -54,9 +55,10 @@ static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_s
     if (s->i_pos >= file_info.second) {
         return 0; // EOF
     }
+
     // Публикуем прогресс в общую переменную libVLC для оверлея (раз в ~500 мс)
     if (s->libvlc == nullptr) {
-        s->libvlc = vlc_object_instance(VLC_OBJECT(p_extractor));
+        s->libvlc = p_extractor->obj.libvlc; // ← вместо vlc_object_instance()
     }
     mtime_t now = mdate();
     if (now - s->last_pub >= 500000) {
@@ -64,18 +66,11 @@ static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_s
             ? (100.0 * (double)s->i_pos / (double)file_info.second) : 0.0;
         char ovbuf[128];
         snprintf(ovbuf, sizeof(ovbuf), "[BT] Progress: %.2f%%", prog);
-        var_SetString((vlc_object_t*)s->libvlc, "bt_overlay_text", ovbuf);
+        var_SetString(VLC_OBJECT(s->libvlc), "bt_overlay_text", ovbuf);
         s->last_pub = now;
     }
 
     // --- ГЛАВНАЯ ЛОГИКА ---
-    // Функция Download::read теперь всегда блокирующая, с внутренним тайм-аутом.
-    // На старте (когда is_initial_buffer_filled = false), VLC вызывает нас
-    // из своего потока кеширования. Мы блокируемся и ждем первый кусок.
-    // После старта, VLC вызывает нас из потока воспроизведения. Мы снова вызываем
-    // тот же read(), но т.к. libtorrent уже качает куски в фоне,
-    // он, скорее всего, вернет данные мгновенно или с минимальной задержкой.
-    // Если данных нет, он вернет 0, что на этом этапе уже безопасно.
     try {
         ssize_t ret = s->p_download->read(s->i_file, (int64_t)s->i_pos,
                                           static_cast<char*>(p_buf), i_size);
@@ -92,9 +87,8 @@ static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_s
         return ret;
 
     } catch (const std::runtime_error& e) {
-        // Это произойдет в основном при тайм-ауте на старте.
         msg_Err(p_extractor, "Fatal error during read (timeout?): %s", e.what());
-        return -1; // Сигнализируем VLC, что источник неисправен.
+        return -1;
     }
 }
 
@@ -108,13 +102,9 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
 
     s->i_pos = i_pos;
 
-    // После перемотки нам снова нужно будет дождаться данных с новой позиции.
-    // Сбрасываем флаг, чтобы DataRead снова использовал блокирующую логику
-    // для заполнения буфера с нового места.
     s->is_initial_buffer_filled = false;
     msg_Dbg(p_extractor, "Resetting buffer status for seeking.");
 
-    // Даем команду libtorrent качать с нового места с высшим приоритетом.
     if (s->p_download) {
         s->p_download->set_piece_priority(s->i_file, (int64_t)s->i_pos, 50 * 1024 * 1024, 7);
     }
@@ -134,13 +124,8 @@ static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list arg
             *va_arg(args, uint64_t*) = s->p_download->get_file(p_extractor->identifier).second;
             break;
 
-        // --- КЛЮЧЕВОЙ МОМЕНТ АРХИТЕКТУРЫ ---
         case STREAM_GET_PTS_DELAY: {
-            // Запрашиваем у VLC большое время на кеширование.
-            // Это заставит его вызвать DataRead из своего потока буферизации,
-            // что делает нашу блокировку на старте безопасной.
             int64_t caching_ms = var_InheritInteger(p_extractor, "network-caching");
-            // Просим минимум 10 секунд (10000 мс) кеширования.
             int64_t delay_us = (caching_ms > 10000 ? caching_ms : 10000) * 1000LL;
             *va_arg(args, int64_t*) = delay_us;
             msg_Dbg(p_extractor, "Reporting PTS delay of %" PRId64 " us for network caching.", delay_us);
@@ -159,10 +144,11 @@ static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list arg
 }
 
 int DataOpen(vlc_object_t* p_obj) {
-    libvlc_int_t *libvlc = vlc_object_instance(p_obj);
-    var_Create((vlc_object_t*)libvlc, "bt_overlay_text", VLC_VAR_STRING);
-    var_SetString((vlc_object_t*)libvlc, "bt_overlay_text", "[BT] Starting...");
-    
+    // Инициализация переменной на libVLC
+    libvlc_int_t *libvlc = p_obj->obj.libvlc;
+    var_Create(VLC_OBJECT(libvlc), "bt_overlay_text", VLC_VAR_STRING);
+    var_SetString(VLC_OBJECT(libvlc), "bt_overlay_text", "[BT] Starting...");
+
     auto* p_extractor = reinterpret_cast<stream_extractor_t*>(p_obj);
     auto md = std::make_unique<char[]>(0x100000);
     ssize_t mdsz = vlc_stream_Read(p_extractor->source, md.get(), 0x100000);
@@ -184,17 +170,16 @@ int DataOpen(vlc_object_t* p_obj) {
     p_extractor->pf_read = DataRead;
     p_extractor->pf_seek = DataSeek;
     p_extractor->pf_control = DataControl;
-    
-    // Автоматически включаем оверлей и стандартный фильтр dynamicoverlay
-    //var_SetString(p_obj, "sub-filter", "bittorrent_overlay:dynamicoverlay");
 
     msg_Dbg(p_obj, "BitTorrent data stream opened successfully.");
     return VLC_SUCCESS;
 }
 
 void DataClose(vlc_object_t* p_obj) {
-    libvlc_int_t *libvlc = vlc_object_instance(p_obj);
-    var_SetString((vlc_object_t*)libvlc, "bt_overlay_text", "");
+    // Очистим строку оверлея
+    libvlc_int_t *libvlc = p_obj->obj.libvlc;
+    var_SetString(VLC_OBJECT(libvlc), "bt_overlay_text", "");
+
     auto* p_extractor = reinterpret_cast<stream_extractor_t*>(p_obj);
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
     if (s) {
