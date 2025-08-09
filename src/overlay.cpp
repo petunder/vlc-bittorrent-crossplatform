@@ -25,37 +25,32 @@
  * VLC не мог найти под-модуль внутри уже загруженного плагина.
  *****************************************************************************/
 /*****************************************************************************
- * BitTorrent status overlay as a SUB SOURCE for VLC 3.0.x
- * Совместимо с VLC 3.0.18 (ABI 3_0_0f). Компилируется C++.
+ * overlay.cpp — BitTorrent status overlay as a SUB SOURCE for VLC 3.0.x
+ * Совместимо с VLC 3.0.18 (ABI 3_0_0f). Компилируется как C++.
  *****************************************************************************/
 
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
 
-// Явно просим C-линковку для API VLC при сборке C++
-#ifdef __cplusplus
-extern "C" {
-#endif
+// Заголовки VLC: НЕ оборачивать в extern "C"!
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_filter.h>
 #include <vlc_subpicture.h>
 #include <vlc_text_style.h>
-#ifdef __cplusplus
-}
-#endif
 
 #include <time.h>
 #include <stdlib.h>
 #include <string.h>
 
-// КРИТИЧЕСКО: без этого VLC 3.0.x не подхватит модуль (не тот символ)
+// Критично для VLC 3.0.x: формирует правильный символ vlc_entry__3_0_0f
 #define MODULE_NAME 3_0_0f
 #ifndef MODULE_STRING
 # define MODULE_STRING "bittorrent_overlay"
 #endif
 
+// Ваши C++ зависимости
 #include "session.h"
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/torrent_status.hpp>
@@ -85,7 +80,7 @@ public:
             for (auto const& st : up->status) {
                 char buf[256];
                 snprintf(buf, sizeof(buf),
-                         "[BT] D:%lld KiB/s U:%lld KiB/s Peers:%d Progress:%.2f%%",
+                         "[BT] D:%lld KiB/s  U:%lld KiB/s  Peers:%d  Progress:%.2f%%",
                          (long long)(st.download_payload_rate / 1024),
                          (long long)(st.upload_payload_rate   / 1024),
                          st.num_peers,
@@ -139,7 +134,7 @@ static int Open(vlc_object_t *p_this)
 
     p_filter->pf_sub_source = Render;
 
-    auto *p_sys = (filter_sys_t*)calloc(1, sizeof(*p_sys));
+    auto *p_sys = (filter_sys_t*)calloc(1, sizeof(filter_sys_t));
     if (!p_sys) return VLC_ENOMEM;
 
     p_sys->provider = new (std::nothrow) StatusProvider();
