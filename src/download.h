@@ -7,7 +7,6 @@
  * получение метаданных из торрент-файлов или magnet-ссылок.
  */
 
-
 #ifndef VLC_BITTORRENT_DOWNLOAD_H
 #define VLC_BITTORRENT_DOWNLOAD_H
 
@@ -17,6 +16,9 @@
 #include <mutex>
 #include <thread>
 #include <functional>
+#include <vector>
+#include <utility>
+#include <string>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsign-conversion"
@@ -32,7 +34,7 @@
 namespace lt = libtorrent;
 
 using MetadataProgressCb = std::function<void(float)>;
-using DataProgressCb = std::function<void(float)>;
+using DataProgressCb     = std::function<void(float)>;
 
 /* компактный срез статуса для оверлея */
 struct BtOverlayStatus {
@@ -43,89 +45,57 @@ struct BtOverlayStatus {
 };
 
 class Download {
-
 public:
     Download(const Download&) = delete;
     Download& operator=(const Download&) = delete;
-    Download(std::mutex& mtx, lt::add_torrent_params& atp, bool k);
+
+    Download(std::mutex& mtx, lt::add_torrent_params& atp, bool keep);
     ~Download();
 
     static std::shared_ptr<Download>
     get_download(char* metadata, size_t metadatalen, std::string save_path, bool keep);
 
-    ssize_t
-    read(int file, int64_t off, char* buf, size_t buflen, DataProgressCb progress_cb);
-
-    ssize_t
-    read(int file, int64_t off, char* buf, size_t buflen)
-    {
+    ssize_t read(int file, int64_t off, char* buf, size_t buflen, DataProgressCb progress_cb);
+    ssize_t read(int file, int64_t off, char* buf, size_t buflen) {
         return read(file, off, buf, buflen, nullptr);
     }
 
     static std::vector<std::pair<std::string, uint64_t>>
     get_files(char* metadata, size_t metadatalen);
-
-    std::vector<std::pair<std::string, uint64_t>>
-    get_files();
+    std::vector<std::pair<std::string, uint64_t>> get_files();
 
     static std::shared_ptr<std::vector<char>>
     get_metadata(std::string url, std::string save_path, std::string cache_path,
                  MetadataProgressCb progress_cb);
-
     static std::shared_ptr<std::vector<char>>
-    get_metadata(std::string url, std::string save_path, std::string cache_path)
-    {
+    get_metadata(std::string url, std::string save_path, std::string cache_path) {
         return get_metadata(url, save_path, cache_path, nullptr);
     }
+    std::shared_ptr<std::vector<char>> get_metadata(MetadataProgressCb progress_cb);
+    std::shared_ptr<std::vector<char>> get_metadata() { return get_metadata(nullptr); }
 
-    std::shared_ptr<std::vector<char>>
-    get_metadata(MetadataProgressCb progress_cb);
-
-    std::shared_ptr<std::vector<char>>
-    get_metadata()
-    {
-        return get_metadata(nullptr);
-    }
-
-    std::pair<int, uint64_t>
-    get_file(std::string path);
-
+    std::pair<int, uint64_t> get_file(std::string path);
     std::string get_name();
     std::string get_infohash();
     lt::torrent_handle get_handle();
 
-    // публичный метод статуса для оверлея
     bool query_status(BtOverlayStatus &out);
 
-    // ФУНКЦИЯ ДЛЯ ПЕРЕМОТКИ
     void set_piece_priority(int file, int64_t off, int size, int priority);
 
 private:
-    static std::shared_ptr<Download>
-    get_download(lt::add_torrent_params& atp, bool k);
+    static std::shared_ptr<Download> get_download(lt::add_torrent_params& atp, bool keep);
 
     void download_metadata(MetadataProgressCb cb);
-
-    void download_metadata()
-    {
-        download_metadata(nullptr);
-    }
+    void download_metadata() { download_metadata(nullptr); }
 
     void download(lt::peer_request part, DataProgressCb cb);
-
-    void download(lt::peer_request part)
-    {
-        download(part, nullptr);
-    }
+    void download(lt::peer_request part) { download(part, nullptr); }
 
     ssize_t read(lt::peer_request part, char* buf, size_t buflen);
-
-    // Старая функция остаётся приватной
     void set_piece_priority(int file, int64_t off, int size, libtorrent::download_priority_t prio);
 
-    // Locks mutex passed to constructor
     std::unique_lock<std::mutex> m_lock;
-
     bool m_keep;
     std::shared_ptr<Session> m_session;
     lt::torrent_handle m_th;
