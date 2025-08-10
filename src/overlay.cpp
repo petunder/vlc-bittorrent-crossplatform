@@ -135,11 +135,26 @@ static subpicture_t* Render(filter_t *p_filter, mtime_t date)
         return NULL;
     }
 
+    // ────────────────────────────────────────────────────────
+    // ИЗМЕНЕНИЕ #1: определяем реальный базовый размер кадра
+    // Берём из fmt_out.video; если нули (редко на старте) — используем 1280x720.
+    // Это значение мы зададим и региону, и самому subpicture_t
+    // (иначе VLC пишет warning: original picture size is undefined)
+    // ────────────────────────────────────────────────────────
+    unsigned w = 0, h = 0;
+    const video_format_t *outv = &p_filter->fmt_out.video;
+    if (outv) {
+        w = outv->i_visible_width  ? outv->i_visible_width  : outv->i_width;
+        h = outv->i_visible_height ? outv->i_visible_height : outv->i_height;
+    }
+    if (w == 0 || h == 0) { w = 1280; h = 720; } // fallback
+
+    // Подготавливаем текстовый формат региона на основе реального размера
     video_format_t fmt;
     memset(&fmt, 0, sizeof(fmt));
     fmt.i_chroma = VLC_CODEC_TEXT;
-    fmt.i_width = fmt.i_visible_width = 1280;
-    fmt.i_height = fmt.i_visible_height = 720;
+    fmt.i_width = fmt.i_visible_width = w;   // ← ИЗМЕНЕНИЕ #2: был константный 1280
+    fmt.i_height = fmt.i_visible_height = h; // ← ИЗМЕНЕНИЕ #2: был константный 720
     fmt.i_sar_num = fmt.i_sar_den = 1;
 
     subpicture_region_t *r = subpicture_region_New(&fmt);
@@ -157,7 +172,21 @@ static subpicture_t* Render(filter_t *p_filter, mtime_t date)
     r->i_x = p_sys->margin;
     r->i_y = p_sys->margin;
 
+    // Присоединяем регион
     spu->p_region = r;
+
+    // ────────────────────────────────────────────────────────
+    // ИЗМЕНЕНИЕ #3: сообщаем VLC «оригинальный» размер картинки
+    // (иначе появляется warning: original picture size is undefined)
+    // ────────────────────────────────────────────────────────
+    spu->i_original_picture_width  = w;
+    spu->i_original_picture_height = h;
+
+    // Пусть позиционирование остаётся относительным к оригинальному размеру
+    // (absolute = false — стандартная схема для оверлеев текста)
+    spu->b_absolute = false; // ← ИЗМЕНЕНИЕ #4: явно укажем поведение
+
+    // Временные параметры субкартинки
     spu->i_start  = date;
     spu->i_stop   = date + 500000; // ~0.5 сек
     spu->b_ephemer = true;
