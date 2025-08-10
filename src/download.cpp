@@ -157,8 +157,11 @@ private:
 
 class MetadataDownloadPromise : public std::promise<void>, public Alert_Listener {
 public:
-    explicit MetadataDownloadPromise(lt::sha1_hash ih) : m_ih(ih) {}
-    void handle_alert(lt::alert* a) override {
+    explicit MetadataDownloadPromise(lt::sha1_hash ih)
+        : m_ih(ih) {}
+
+    void handle_alert(lt::alert* a) override
+    {
         if (auto* x = lt::alert_cast<lt::torrent_error_alert>(a)) {
 #if LIBTORRENT_VERSION_NUM >= 20000
             if (x->handle.info_hashes().v1 != m_ih) return;
@@ -172,7 +175,7 @@ public:
 #else
             if (x->handle.info_hash() != m_ih) return;
 #endif
-            set_exception(std::make_exception_ptr<std::runtime_error>("metadata failed"));
+            set_exception(std::make_exception_ptr(std::runtime_error("metadata failed")));
         } else if (auto* x = lt::alert_cast<lt::metadata_received_alert>(a)) {
 #if LIBTORRENT_VERSION_NUM >= 20000
             if (x->handle.info_hashes().v1 != m_ih) return;
@@ -182,9 +185,11 @@ public:
             set_value();
         }
     }
+
 private:
     lt::sha1_hash m_ih;
 };
+
 
 class RemovePromise : public std::promise<void>, public Alert_Listener {
 public:
