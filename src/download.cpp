@@ -54,6 +54,7 @@
 #include <iterator>
 #include <vector>
 #include <map>
+#include <cstring>
 
 #include "download.h"
 #include "session.h"
@@ -78,7 +79,6 @@
 #pragma GCC diagnostic pop
 
 #define D(x)
-#define DD(x)
 
 #define kB (1024)
 #define MB (1024 * kB)
@@ -87,24 +87,17 @@
 #define PRIO_HIGHER  6
 #define PRIO_HIGH    5
 
-// Тайм-аут ожидания одного куска.
 #define PIECE_READ_TIMEOUT 60
 
 namespace lt = libtorrent;
 
+/* Позволяет корректно прерывать ожидание при stop/seek со стороны VLC */
 template <typename T> class vlc_interrupt_guard {
 public:
-    vlc_interrupt_guard(T& pr)
-    {
-        vlc_interrupt_register(abort, &pr);
-    }
-    ~vlc_interrupt_guard()
-    {
-        vlc_interrupt_unregister();
-    }
+    explicit vlc_interrupt_guard(T& pr) { vlc_interrupt_register(abort, &pr); }
+    ~vlc_interrupt_guard() { vlc_interrupt_unregister(); }
 private:
-    static void abort(void* data)
-    {
+    static void abort(void* data) {
         try {
             static_cast<T*>(data)->set_exception(
                 std::make_exception_ptr(std::runtime_error("vlc interrupted")));
@@ -115,14 +108,8 @@ private:
 template <typename T> class AlertSubscriber {
 public:
     AlertSubscriber(std::shared_ptr<Session> dl, T* pr)
-        : m_session(dl), m_promise(pr)
-    {
-        m_session->register_alert_listener(m_promise);
-    }
-    ~AlertSubscriber()
-    {
-        m_session->unregister_alert_listener(m_promise);
-    }
+        : m_session(dl), m_promise(pr) { m_session->register_alert_listener(m_promise); }
+    ~AlertSubscriber() { m_session->unregister_alert_listener(m_promise); }
 private:
     std::shared_ptr<Session> m_session;
     T* m_promise;
@@ -133,16 +120,14 @@ using ReadValue = std::pair<boost::shared_array<char>, int>;
 class ReadPiecePromise : public std::promise<ReadValue>, public Alert_Listener {
 public:
     ReadPiecePromise(lt::sha1_hash ih, int p) : m_ih(ih), m_piece(p) {}
-    void handle_alert(lt::alert* a) override
-    {
+    void handle_alert(lt::alert* a) override {
         if (auto* x = lt::alert_cast<lt::read_piece_alert>(a)) {
-        #if LIBTORRENT_VERSION_NUM >= 20000
+#if LIBTORRENT_VERSION_NUM >= 20000
             if (x->handle.info_hashes().v1 != m_ih) return;
-        #else
+#else
             if (x->handle.info_hash() != m_ih) return;
-        #endif
+#endif
             if (x->piece != m_piece) return;
-
             if (x->error) {
                 set_exception(std::make_exception_ptr(std::runtime_error("read failed")));
             } else {
@@ -158,14 +143,13 @@ private:
 class DownloadPiecePromise : public std::promise<void>, public Alert_Listener {
 public:
     DownloadPiecePromise(lt::sha1_hash ih, int p) : m_ih(ih), m_piece(p) {}
-    void handle_alert(lt::alert* a) override
-    {
+    void handle_alert(lt::alert* a) override {
         if (auto* x = lt::alert_cast<lt::piece_finished_alert>(a)) {
-        #if LIBTORRENT_VERSION_NUM >= 20000
+#if LIBTORRENT_VERSION_NUM >= 20000
             if (x->handle.info_hashes().v1 != m_ih) return;
-        #else
+#else
             if (x->handle.info_hash() != m_ih) return;
-        #endif
+#endif
             if (x->piece_index != m_piece) return;
             set_value();
         }
@@ -178,28 +162,27 @@ private:
 class MetadataDownloadPromise : public std::promise<void>, public Alert_Listener {
 public:
     explicit MetadataDownloadPromise(lt::sha1_hash ih) : m_ih(ih) {}
-    void handle_alert(lt::alert* a) override
-    {
+    void handle_alert(lt::alert* a) override {
         if (auto* x = lt::alert_cast<lt::torrent_error_alert>(a)) {
-        #if LIBTORRENT_VERSION_NUM >= 20000
+#if LIBTORRENT_VERSION_NUM >= 20000
             if (x->handle.info_hashes().v1 != m_ih) return;
-        #else
+#else
             if (x->handle.info_hash() != m_ih) return;
-        #endif
+#endif
             set_exception(std::make_exception_ptr(std::runtime_error("metadata failed")));
         } else if (auto* x = lt::alert_cast<lt::metadata_failed_alert>(a)) {
-        #if LIBTORRENT_VERSION_NUM >= 20000
+#if LIBTORRENT_VERSION_NUM >= 20000
             if (x->handle.info_hashes().v1 != m_ih) return;
-        #else
+#else
             if (x->handle.info_hash() != m_ih) return;
-        #endif
+#endif
             set_exception(std::make_exception_ptr(std::runtime_error("metadata failed")));
         } else if (auto* x = lt::alert_cast<lt::metadata_received_alert>(a)) {
-        #if LIBTORRENT_VERSION_NUM >= 20000
+#if LIBTORRENT_VERSION_NUM >= 20000
             if (x->handle.info_hashes().v1 != m_ih) return;
-        #else
+#else
             if (x->handle.info_hash() != m_ih) return;
-        #endif
+#endif
             set_value();
         }
     }
@@ -210,14 +193,13 @@ private:
 class RemovePromise : public std::promise<void>, public Alert_Listener {
 public:
     explicit RemovePromise(lt::sha1_hash ih) : m_ih(ih) {}
-    void handle_alert(lt::alert* a) override
-    {
+    void handle_alert(lt::alert* a) override {
         if (auto* x = lt::alert_cast<lt::torrent_removed_alert>(a)) {
-        #if LIBTORRENT_VERSION_NUM >= 20000
+#if LIBTORRENT_VERSION_NUM >= 20000
             if (x->info_hashes.v1 != m_ih) return;
-        #else
+#else
             if (x->info_hash != m_ih) return;
-        #endif
+#endif
             set_value();
         }
     }
@@ -225,19 +207,17 @@ private:
     lt::sha1_hash m_ih;
 };
 
-Download::Download(std::mutex& mtx, lt::add_torrent_params& atp, bool k)
-    : m_lock(mtx), m_keep(k), m_session(Session::get())
+Download::Download(std::mutex& mtx, lt::add_torrent_params& atp, bool keep)
+    : m_lock(mtx), m_keep(keep), m_session(Session::get())
 {
-    D(printf("%s:%d: %s (from atp)\n", __FILE__, __LINE__, __func__));
-
     m_th = m_session->add_torrent(atp);
     if (!m_th.is_valid())
         throw std::runtime_error("Failed to add torrent");
 
     if (m_th.is_valid() && !atp.trackers.empty()) {
-        std::vector<lt::announce_entry> announce_entries;
-        for (const auto& url : atp.trackers) announce_entries.emplace_back(url);
-        m_th.replace_trackers(announce_entries);
+        std::vector<lt::announce_entry> v;
+        for (const auto& url : atp.trackers) v.emplace_back(url);
+        m_th.replace_trackers(v);
     }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -245,23 +225,18 @@ Download::Download(std::mutex& mtx, lt::add_torrent_params& atp, bool k)
 
 Download::~Download()
 {
-    D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
-
     if (m_th.is_valid()) {
         RemovePromise rmprom(m_th.info_hash());
         AlertSubscriber<RemovePromise> sub(m_session, &rmprom);
         auto f = rmprom.get_future();
         m_session->remove_torrent(m_th, m_keep);
-        f.wait_for(std::chrono::seconds(5));
+        (void)f.wait_for(std::chrono::seconds(5));
     }
 }
 
 ssize_t Download::read(int file, int64_t fileoff, char* buf, size_t buflen,
                        DataProgressCb progress_cb)
 {
-    D(printf("%s:%d: %s(%d, %lu, %p, %lu)\n", __FILE__, __LINE__, __func__,
-        file, fileoff, buf, buflen));
-
     download_metadata();
 
     auto ti = m_th.torrent_file();
@@ -270,15 +245,16 @@ ssize_t Download::read(int file, int64_t fileoff, char* buf, size_t buflen,
         throw std::runtime_error("File not found");
     if (fileoff < 0)
         throw std::runtime_error("File offset negative");
+
     int64_t filesz = fs.file_size(file);
-    if (fileoff >= filesz) return 0;
+    if (fileoff >= filesz) return 0; /* реальный EOF */
 
     auto part = ti->map_file(file, fileoff,
         (int)std::min({ (int64_t)std::numeric_limits<int>::max(),
                         (int64_t)buflen, filesz - fileoff }));
     if (part.length <= 0) return 0;
 
-    // Приоритеты для плавного старта/перемотки
+    /* Приоритеты для плавного старта/перемотки */
     set_piece_priority(file, fileoff, part.length, PRIO_HIGHEST);
     int64_t p01 = std::max(std::min((int64_t)std::numeric_limits<int>::max(), filesz / 1000),
                            (int64_t)128 * kB);
@@ -288,37 +264,35 @@ ssize_t Download::read(int file, int64_t fileoff, char* buf, size_t buflen,
                           (int64_t)32 * MB);
     set_piece_priority(file, fileoff, (int)p5, PRIO_HIGH);
 
-    // Если нужной части нет — ждём её загрузки (с прерыванием из VLC)
+    /* Если части ещё нет — ждём piece_finished (можно прервать stop/seek'ом) */
     if (!m_th.have_piece(part.piece)) {
         DownloadPiecePromise dlprom(m_th.info_hash(), part.piece);
         AlertSubscriber<DownloadPiecePromise> sub(m_session, &dlprom);
-        // ВАЖНО: это позволит мгновенно прервать ожидание при Pause/Stop
         vlc_interrupt_guard<DownloadPiecePromise> intrguard(dlprom);
-        auto f = dlprom.get_future();
 
         if (progress_cb) progress_cb(0.0);
-
+        auto f = dlprom.get_future();
         auto status = f.wait_for(std::chrono::seconds(PIECE_READ_TIMEOUT));
-        if (status == std::future_status::timeout) {
+        if (status == std::future_status::timeout)
             throw std::runtime_error("Timeout waiting for piece to download");
-        }
-        // может бросить "vlc interrupted" — это отработает вызывающий код
-        f.get();
+        f.get(); /* может бросить "vlc interrupted" → DataRead вернёт -1 */
         if (progress_cb) progress_cb(100.0);
     }
 
-    if (!m_th.have_piece(part.piece)) {
-        return 0;
+    /* На всякий случай: если после ожидания кусок не пришёл — повторим ожидание. */
+    int guard_loops = 0;
+    while (!m_th.have_piece(part.piece)) {
+        if (++guard_loops > 3)
+            throw std::runtime_error("piece still missing after wait");
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
-    // Чтение из куска
     return read(part, buf, buflen);
 }
 
 void Download::set_piece_priority(int file, int64_t off, int size,
                                   libtorrent::download_priority_t prio)
 {
-    D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
 
     auto ti = m_th.torrent_file();
@@ -338,9 +312,7 @@ void Download::set_piece_priority(int file, int64_t off, int size,
 
 std::vector<std::pair<std::string, uint64_t>> Download::get_files()
 {
-    D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
-
     std::vector<std::pair<std::string, uint64_t>> files;
     const lt::file_storage& fs = m_th.torrent_file()->files();
     for (int i = 0; i < fs.num_files(); i++)
@@ -351,8 +323,6 @@ std::vector<std::pair<std::string, uint64_t>> Download::get_files()
 std::vector<std::pair<std::string, uint64_t>>
 Download::get_files(char* metadata, size_t metadatasz)
 {
-    D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
-
     lt::error_code ec;
     lt::torrent_info ti(metadata, (int)metadatasz, ec);
     if (ec) throw std::runtime_error("Failed to parse metadata");
@@ -368,8 +338,6 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
     std::string url, std::string save_path,
     std::string cache_path, MetadataProgressCb cb)
 {
-    D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
-
     static const std::vector<std::string> public_trackers = {
         "udp://tracker.openbittorrent.com:6969/announce",
         "udp://tracker.opentrackr.org:1337/announce",
@@ -385,7 +353,6 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
 
     lt::add_torrent_params atp;
     atp.save_path = save_path;
-
     atp.flags &= ~lt::torrent_flags::auto_managed;
     atp.flags &= ~lt::torrent_flags::paused;
 
@@ -400,16 +367,15 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
 #endif
         if (ec2) throw std::runtime_error("Failed to parse metadata from file or magnet");
     } else {
-        if (atp.trackers.empty()) {
+        if (atp.trackers.empty())
             atp.trackers = public_trackers;
-        }
 
         std::string info_hash_str;
-        #if LIBTORRENT_VERSION_NUM >= 20000
-            info_hash_str = lt::aux::to_hex(atp.info_hashes.v1.to_string());
-        #else
-            info_hash_str = lt::aux::to_hex(atp.info_hash.to_string());
-        #endif
+#if LIBTORRENT_VERSION_NUM >= 20000
+        info_hash_str = lt::aux::to_hex(atp.info_hashes.v1.to_string());
+#else
+        info_hash_str = lt::aux::to_hex(atp.info_hash.to_string());
+#endif
         std::string path = cache_path + DIR_SEP + info_hash_str + ".torrent";
 
         lt::error_code ec_cache;
@@ -425,15 +391,13 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
             std::ofstream os(path, std::ios::binary | std::ios::trunc);
             os.write(metadata->data(), (std::streamsize)metadata->size());
             os.close();
-
             return metadata;
         }
     }
 
     if (atp.ti && !atp.trackers.empty()) {
-        for (auto const& tracker : atp.trackers) {
+        for (auto const& tracker : atp.trackers)
             atp.ti->add_tracker(tracker);
-        }
     }
 
     auto entry = lt::create_torrent(*atp.ti).generate();
@@ -442,23 +406,21 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
     return metadata;
 }
 
-std::shared_ptr<Download> Download::get_download(lt::add_torrent_params& atp, bool k)
+std::shared_ptr<Download> Download::get_download(lt::add_torrent_params& atp, bool keep)
 {
-    D(printf("%s:%d: %s (from atp)\n", __FILE__, __LINE__, __func__));
-    
     lt::sha1_hash ih;
     if (atp.ti) {
-    #if LIBTORRENT_VERSION_NUM >= 20000
+#if LIBTORRENT_VERSION_NUM >= 20000
         ih = atp.ti->info_hashes().v1;
-    #else
+#else
         ih = atp.ti->info_hash();
-    #endif
+#endif
     } else {
-    #if LIBTORRENT_VERSION_NUM >= 20000
+#if LIBTORRENT_VERSION_NUM >= 20000
         ih = atp.info_hashes.v1;
-    #else
+#else
         ih = atp.info_hash;
-    #endif
+#endif
     }
 
     static std::mutex mtx;
@@ -468,17 +430,14 @@ std::shared_ptr<Download> Download::get_download(lt::add_torrent_params& atp, bo
     static std::map<lt::sha1_hash, std::mutex> dls_mtx;
     std::shared_ptr<Download> dl = dls[ih].lock();
     if (!dl)
-        dls[ih] = dl = std::make_shared<Download>(dls_mtx[ih], atp, k);
+        dls[ih] = dl = std::make_shared<Download>(dls_mtx[ih], atp, keep);
     return dl;
 }
 
-std::shared_ptr<Download> Download::get_download(char* md, size_t mdsz, std::string sp, bool k)
+std::shared_ptr<Download> Download::get_download(char* md, size_t mdsz, std::string sp, bool keep)
 {
-    D(printf("%s:%d: %s (from buf)\n", __FILE__, __LINE__, __func__));
-
     lt::add_torrent_params atp;
     atp.save_path = sp;
-
     atp.flags &= ~lt::torrent_flags::auto_managed;
     atp.flags &= ~lt::torrent_flags::paused;
     atp.flags &= ~lt::torrent_flags::duplicate_is_error;
@@ -490,14 +449,12 @@ std::shared_ptr<Download> Download::get_download(char* md, size_t mdsz, std::str
     atp.ti = std::make_shared<lt::torrent_info>(md, (int)mdsz, std::ref(ec));
 #endif
     if (ec) throw std::runtime_error("Failed to parse metadata");
-    return Download::get_download(atp, k);
+    return Download::get_download(atp, keep);
 }
 
 std::pair<int, uint64_t> Download::get_file(std::string path)
 {
-    D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
-
     const lt::file_storage& fs = m_th.torrent_file()->files();
     for (int i = 0; i < fs.num_files(); i++) {
         if (fs.file_path(i) == path)
@@ -508,14 +465,12 @@ std::pair<int, uint64_t> Download::get_file(std::string path)
 
 std::string Download::get_name()
 {
-    D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
     return m_th.torrent_file()->name();
 }
 
 std::string Download::get_infohash()
 {
-    D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
 #if LIBTORRENT_VERSION_NUM >= 20000
     return lt::aux::to_hex(m_th.info_hashes().v1.to_string());
@@ -529,11 +484,9 @@ lt::torrent_handle Download::get_handle()
     return m_th;
 }
 
-/* отдаём реальный статус для оверлея */
 bool Download::query_status(BtOverlayStatus &out)
 {
-    if (!m_th.is_valid())
-        return false;
+    if (!m_th.is_valid()) return false;
 
 #if LIBTORRENT_VERSION_NUM >= 10100
     auto flags = lt::torrent_handle::query_name
@@ -552,9 +505,7 @@ bool Download::query_status(BtOverlayStatus &out)
 
 std::shared_ptr<std::vector<char>> Download::get_metadata(MetadataProgressCb cb)
 {
-    D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata(cb);
-
     auto entry = lt::create_torrent(*m_th.torrent_file()).generate();
     auto buffer = std::make_shared<std::vector<char>>();
     lt::bencode(std::back_inserter(*buffer), entry);
@@ -563,10 +514,7 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(MetadataProgressCb cb)
 
 void Download::download_metadata(MetadataProgressCb cb)
 {
-    D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
-
-    if (m_th.status().has_metadata)
-        return;
+    if (m_th.status().has_metadata) return;
 
     MetadataDownloadPromise dlprom(m_th.info_hash());
     AlertSubscriber<MetadataDownloadPromise> sub(m_session, &dlprom);
@@ -580,11 +528,9 @@ void Download::download_metadata(MetadataProgressCb cb)
 
 void Download::download(lt::peer_request part, DataProgressCb cb)
 {
-    D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
 
-    if (m_th.have_piece(part.piece))
-        return;
+    if (m_th.have_piece(part.piece)) return;
 
     DownloadPiecePromise dlprom(m_th.info_hash(), part.piece);
     AlertSubscriber<DownloadPiecePromise> sub(m_session, &dlprom);
@@ -598,7 +544,6 @@ void Download::download(lt::peer_request part, DataProgressCb cb)
 
 ssize_t Download::read(lt::peer_request part, char* buf, size_t buflen)
 {
-    D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
 
     ReadPiecePromise rdprom(m_th.info_hash(), part.piece);
@@ -617,7 +562,7 @@ ssize_t Download::read(lt::peer_request part, char* buf, size_t buflen)
                          part.length });
     if (len < 0) return -1;
 
-    memcpy(buf, piece_buffer.get() + part.start, (size_t)len);
+    std::memcpy(buf, piece_buffer.get() + part.start, (size_t)len);
     return (ssize_t)len;
 }
 
