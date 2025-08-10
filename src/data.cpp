@@ -155,10 +155,10 @@ static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list arg
             return VLC_SUCCESS;
 
         case STREAM_SET_PAUSE_STATE: {
-            bool b_pause = *va_arg(args, bool*);
-            s->paused = b_pause;           // только для логов/диагностики
+            int paused_int = va_arg(args, int);   // ← читаем значение (int), а не указатель
+            bool b_pause = paused_int != 0;
+            s->paused = b_pause;                  // чисто для диагностики
             msg_Dbg(p_extractor, "Pause state set to: %s", b_pause ? "paused" : "playing");
-            // Ничего больше не делаем: VLC сам перестаёт вызывать pf_read во время паузы.
             return VLC_SUCCESS;
         }
 
