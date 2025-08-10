@@ -18,12 +18,12 @@
  * Реализация потока с использованием механизма кеширования VLC.
  * Гибридный подход: блокировка на старте, асинхронное чтение после.
  *
+ *
  * Важно для Pause/Play:
- *  - Сообщаем ядру VLC, что мы НЕ управляем темпом сами
- *    (STREAM_CAN_CONTROL_PACE = false).
- *    Тогда при паузе ядро перестаёт читать, поток ввода «замерзает» корректно.
- *  - Добавлен прием STREAM_SET_PAUSE_STATE (на будущее), но он не обязателен
- *    при CAN_CONTROL_PACE=false.
+ *  - STREAM_CAN_CONTROL_PACE = false → VLC сам перестаёт читать при паузе.
+ *  - На случай, если read() уже блокировался в момент нажатия Pause,
+ *    мы корректно обрабатываем прерывание: НЕ возвращаем EOF и НЕ даём ошибку,
+ *    а просто ждём снятия паузы и пробуем читать снова.
  */
 #ifdef HAVE_CONFIG_H
 # include "config.h"
@@ -32,7 +32,8 @@
 #include <memory>
 #include <stdexcept>
 #include <atomic>
-#include <stdio.h>          // snprintf
+#include <thread>         // std::this_thread::sleep_for
+#include <stdio.h>        // snprintf
 
 #include "vlc.h"
 #include <vlc_variables.h>
@@ -48,7 +49,7 @@ struct data_sys {
     mtime_t       last_pub = 0;
 
     std::atomic<bool> is_initial_buffer_filled{false};
-    std::atomic<bool> paused{false};   // ← для совместимости со STREAM_SET_PAUSE_STATE
+    std::atomic<bool> paused{false};
 };
 
 static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_size) {
@@ -57,52 +58,60 @@ static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_s
         return -1;
     }
 
-    // EOF
+    // EOF?
     auto file_info = s->p_download->get_file(p_extractor->identifier);
     if (s->i_pos >= file_info.second) {
         return 0;
     }
 
-    // Если ядро отправило нам паузу, а вдруг всё-таки позвало read() — просто ничего не читаем.
-    if (s->paused.load()) {
-        // Возвращаем 0 байт; при CAN_CONTROL_PACE=false ядро обычно не дергает read() в паузе.
-        return 0;
-    }
-
-    // Инициализация libVLC указателя
     if (s->libvlc == nullptr) {
         s->libvlc = p_extractor->obj.libvlc;
     }
 
-    // Периодическая публикация реального статуса торрента (для оверлея)
-    mtime_t now = mdate();
-    if (now - s->last_pub >= 500000) { // ~0.5 сек
-        BtOverlayStatus st{};
-        if (s->p_download->query_status(st)) {
-            char ovbuf[256];
-            snprintf(ovbuf, sizeof(ovbuf),
-                     "[BT] D:%lld KiB/s  U:%lld KiB/s  Peers:%d  Progress:%.2f%%",
-                     st.download_kib_s, st.upload_kib_s, st.peers, st.progress_pct);
-            var_SetString(VLC_OBJECT(s->libvlc), "bt_overlay_text", ovbuf);
+    for (;;) {
+        // Если внезапно зовут read() во время паузы — просто ждём, не возвращая 0/ошибку.
+        if (s->paused.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
         }
-        s->last_pub = now;
-    }
 
-    // Основное чтение
-    try {
-        ssize_t ret = s->p_download->read(s->i_file, (int64_t)s->i_pos,
-                                          static_cast<char*>(p_buf), i_size);
-        if (ret > 0) {
-            s->i_pos += ret;
-            if (!s->is_initial_buffer_filled.load()) {
-                s->is_initial_buffer_filled = true;
-                msg_Dbg(p_extractor, "Initial buffer filled, playback starting.");
+        // Периодическая публикация статуса торрента (для оверлея)
+        mtime_t now = mdate();
+        if (now - s->last_pub >= 500000) { // ~0.5 сек
+            BtOverlayStatus st{};
+            if (s->p_download->query_status(st)) {
+                char ovbuf[256];
+                snprintf(ovbuf, sizeof(ovbuf),
+                         "[BT] D:%lld KiB/s  U:%lld KiB/s  Peers:%d  Progress:%.2f%%",
+                         st.download_kib_s, st.upload_kib_s, st.peers, st.progress_pct);
+                var_SetString(VLC_OBJECT(s->libvlc), "bt_overlay_text", ovbuf);
             }
+            s->last_pub = now;
         }
-        return ret;
-    } catch (const std::runtime_error& e) {
-        msg_Err(p_extractor, "Fatal error during read (timeout?): %s", e.what());
-        return -1;
+
+        try {
+            ssize_t ret = s->p_download->read(s->i_file, (int64_t)s->i_pos,
+                                              static_cast<char*>(p_buf), i_size);
+            if (ret > 0) {
+                s->i_pos += ret;
+                if (!s->is_initial_buffer_filled.load()) {
+                    s->is_initial_buffer_filled = true;
+                    msg_Dbg(p_extractor, "Initial buffer filled, playback starting.");
+                }
+            }
+            return ret; // >0 или 0 (на редком EOF), либо 0, если данных пока нет — VLC подождёт
+        } catch (const std::runtime_error& e) {
+            // Если нас прервали (Pause/Stop) через vlc_interrupt_guard внутри Download::read()
+            // — НЕ считаем это ошибкой и НЕ отдаём EOF. Ждём снятия паузы и пробуем снова.
+            if (strstr(e.what(), "vlc interrupted") != nullptr) {
+                msg_Dbg(p_extractor, "Read interrupted by VLC (pause/stop); waiting...");
+                // Если pause — дождёмся снятия паузы; если stop — нас скоро закроют.
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                continue;
+            }
+            msg_Err(p_extractor, "Fatal error during read: %s", e.what());
+            return -1;
+        }
     }
 }
 
@@ -147,17 +156,18 @@ static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list arg
         }
 
         case STREAM_CAN_PAUSE:
-            *va_arg(args, bool*) = true; // мы поддерживаем паузу
+            *va_arg(args, bool*) = true;
             break;
 
         case STREAM_CAN_CONTROL_PACE:
-            *va_arg(args, bool*) = false; // КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: темпом НЕ управляем
+            *va_arg(args, bool*) = false; // темпом НЕ управляем сами
             break;
 
         case STREAM_SET_PAUSE_STATE: {
             bool b_pause = *va_arg(args, bool*);
             s->paused = b_pause;
             msg_Dbg(p_extractor, "Pause state set to: %s", b_pause ? "paused" : "playing");
+            // ВАЖНО: торрент НЕ останавливаем — он продолжает качать.
             break;
         }
 
