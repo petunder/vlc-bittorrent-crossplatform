@@ -78,8 +78,6 @@
 #include <libtorrent/torrent_flags.hpp>
 #pragma GCC diagnostic pop
 
-#define D(x)
-
 #define kB (1024)
 #define MB (1024 * kB)
 
@@ -87,11 +85,9 @@
 #define PRIO_HIGHER  6
 #define PRIO_HIGH    5
 
-#define PIECE_READ_TIMEOUT 60
-
 namespace lt = libtorrent;
 
-/* Позволяет корректно прерывать ожидание при stop/seek со стороны VLC */
+/* Прерывание ожиданий по stop/seek со стороны VLC */
 template <typename T> class vlc_interrupt_guard {
 public:
     explicit vlc_interrupt_guard(T& pr) { vlc_interrupt_register(abort, &pr); }
@@ -176,7 +172,7 @@ public:
 #else
             if (x->handle.info_hash() != m_ih) return;
 #endif
-            set_exception(std::make_exception_ptr(std::runtime_error("metadata failed")));
+            set_exception(std::make_exception_ptr<std::runtime_error>("metadata failed"));
         } else if (auto* x = lt::alert_cast<lt::metadata_received_alert>(a)) {
 #if LIBTORRENT_VERSION_NUM >= 20000
             if (x->handle.info_hashes().v1 != m_ih) return;
@@ -254,7 +250,7 @@ ssize_t Download::read(int file, int64_t fileoff, char* buf, size_t buflen,
                         (int64_t)buflen, filesz - fileoff }));
     if (part.length <= 0) return 0;
 
-    /* Приоритеты для плавного старта/перемотки */
+    /* Приоритеты под новое место */
     set_piece_priority(file, fileoff, part.length, PRIO_HIGHEST);
     int64_t p01 = std::max(std::min((int64_t)std::numeric_limits<int>::max(), filesz / 1000),
                            (int64_t)128 * kB);
@@ -264,7 +260,7 @@ ssize_t Download::read(int file, int64_t fileoff, char* buf, size_t buflen,
                           (int64_t)32 * MB);
     set_piece_priority(file, fileoff, (int)p5, PRIO_HIGH);
 
-    /* Если части ещё нет — ждём piece_finished (можно прервать stop/seek'ом) */
+    /* Если куска ещё нет — ждём БЕЗ тайм-аута (прерываемо через vlc_interrupt_guard) */
     if (!m_th.have_piece(part.piece)) {
         DownloadPiecePromise dlprom(m_th.info_hash(), part.piece);
         AlertSubscriber<DownloadPiecePromise> sub(m_session, &dlprom);
@@ -272,19 +268,15 @@ ssize_t Download::read(int file, int64_t fileoff, char* buf, size_t buflen,
 
         if (progress_cb) progress_cb(0.0);
         auto f = dlprom.get_future();
-        auto status = f.wait_for(std::chrono::seconds(PIECE_READ_TIMEOUT));
-        if (status == std::future_status::timeout)
-            throw std::runtime_error("Timeout waiting for piece to download");
-        f.get(); /* может бросить "vlc interrupted" → DataRead вернёт -1 */
+        f.get(); /* прервётся исключением "vlc interrupted" при stop/seek */
         if (progress_cb) progress_cb(100.0);
     }
 
-    /* На всякий случай: если после ожидания кусок не пришёл — повторим ожидание. */
+    /* Гарантируем наличие куска и читаем */
     int guard_loops = 0;
     while (!m_th.have_piece(part.piece)) {
         if (++guard_loops > 3)
-            throw std::runtime_error("piece still missing after wait");
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
     return read(part, buf, buflen);
