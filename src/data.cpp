@@ -17,6 +17,13 @@
  * 4.  При закрытии (DataClose) он очищает переменную активного торрента.
  * Реализация потока с использованием механизма кеширования VLC.
  * Гибридный подход: блокировка на старте, асинхронное чтение после.
+ *
+ * Важно для Pause/Play:
+ *  - Сообщаем ядру VLC, что мы НЕ управляем темпом сами
+ *    (STREAM_CAN_CONTROL_PACE = false).
+ *    Тогда при паузе ядро перестаёт читать, поток ввода «замерзает» корректно.
+ *  - Добавлен прием STREAM_SET_PAUSE_STATE (на будущее), но он не обязателен
+ *    при CAN_CONTROL_PACE=false.
  */
 #ifdef HAVE_CONFIG_H
 # include "config.h"
@@ -25,7 +32,7 @@
 #include <memory>
 #include <stdexcept>
 #include <atomic>
-#include <stdio.h>
+#include <stdio.h>          // snprintf
 
 #include "vlc.h"
 #include <vlc_variables.h>
@@ -40,34 +47,39 @@ struct data_sys {
     libvlc_int_t* libvlc = nullptr;
     mtime_t       last_pub = 0;
 
-    // Флаг, который гарантирует, что блокирующая логика
-    // для начальной буферизации сработает только один раз.
     std::atomic<bool> is_initial_buffer_filled{false};
+    std::atomic<bool> paused{false};   // ← для совместимости со STREAM_SET_PAUSE_STATE
 };
 
 static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_size) {
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
     if (!s || !s->p_download) {
-        return -1; // Критическая ошибка
+        return -1;
     }
 
-    // Проверка на конец файла
+    // EOF
     auto file_info = s->p_download->get_file(p_extractor->identifier);
     if (s->i_pos >= file_info.second) {
-        return 0; // EOF
+        return 0;
     }
 
-    // Публикуем прогресс в общую переменную libVLC для оверлея (раз в ~500 мс)
-    if (s->libvlc == nullptr) {
-        s->libvlc = p_extractor->obj.libvlc; // ← вместо vlc_object_instance()
+    // Если ядро отправило нам паузу, а вдруг всё-таки позвало read() — просто ничего не читаем.
+    if (s->paused.load()) {
+        // Возвращаем 0 байт; при CAN_CONTROL_PACE=false ядро обычно не дергает read() в паузе.
+        return 0;
     }
-    // Периодическая публикация реального статуса торрента
+
+    // Инициализация libVLC указателя
+    if (s->libvlc == nullptr) {
+        s->libvlc = p_extractor->obj.libvlc;
+    }
+
+    // Периодическая публикация реального статуса торрента (для оверлея)
     mtime_t now = mdate();
     if (now - s->last_pub >= 500000) { // ~0.5 сек
         BtOverlayStatus st{};
         if (s->p_download->query_status(st)) {
             char ovbuf[256];
-            // Скорости — реальные из libtorrent; прогресс — общий прогресс торрента
             snprintf(ovbuf, sizeof(ovbuf),
                      "[BT] D:%lld KiB/s  U:%lld KiB/s  Peers:%d  Progress:%.2f%%",
                      st.download_kib_s, st.upload_kib_s, st.peers, st.progress_pct);
@@ -76,22 +88,18 @@ static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_s
         s->last_pub = now;
     }
 
-    // --- ГЛАВНАЯ ЛОГИКА ---
+    // Основное чтение
     try {
         ssize_t ret = s->p_download->read(s->i_file, (int64_t)s->i_pos,
                                           static_cast<char*>(p_buf), i_size);
-
         if (ret > 0) {
             s->i_pos += ret;
-            // После первого успешного чтения, считаем, что буфер заполнен.
             if (!s->is_initial_buffer_filled.load()) {
                 s->is_initial_buffer_filled = true;
                 msg_Dbg(p_extractor, "Initial buffer filled, playback starting.");
             }
         }
-        // Возвращаем ret как есть (может быть > 0 или 0, если данные еще не готовы)
         return ret;
-
     } catch (const std::runtime_error& e) {
         msg_Err(p_extractor, "Fatal error during read (timeout?): %s", e.what());
         return -1;
@@ -107,7 +115,6 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
     }
 
     s->i_pos = i_pos;
-
     s->is_initial_buffer_filled = false;
     msg_Dbg(p_extractor, "Resetting buffer status for seeking.");
 
@@ -126,6 +133,7 @@ static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list arg
         case STREAM_CAN_SEEK:
             *va_arg(args, bool*) = true;
             break;
+
         case STREAM_GET_SIZE:
             *va_arg(args, uint64_t*) = s->p_download->get_file(p_extractor->identifier).second;
             break;
@@ -139,9 +147,19 @@ static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list arg
         }
 
         case STREAM_CAN_PAUSE:
-        case STREAM_CAN_CONTROL_PACE:
-            *va_arg(args, bool*) = true;
+            *va_arg(args, bool*) = true; // мы поддерживаем паузу
             break;
+
+        case STREAM_CAN_CONTROL_PACE:
+            *va_arg(args, bool*) = false; // КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: темпом НЕ управляем
+            break;
+
+        case STREAM_SET_PAUSE_STATE: {
+            bool b_pause = *va_arg(args, bool*);
+            s->paused = b_pause;
+            msg_Dbg(p_extractor, "Pause state set to: %s", b_pause ? "paused" : "playing");
+            break;
+        }
 
         default:
             return vlc_stream_vaControl(p_extractor->source, i_query, args);
@@ -150,7 +168,7 @@ static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list arg
 }
 
 int DataOpen(vlc_object_t* p_obj) {
-    // Инициализация переменной на libVLC
+    // Инициализация переменной на libVLC (для оверлея)
     libvlc_int_t *libvlc = p_obj->obj.libvlc;
     var_Create(VLC_OBJECT(libvlc), "bt_overlay_text", VLC_VAR_STRING);
     var_SetString(VLC_OBJECT(libvlc), "bt_overlay_text", "[BT] Starting...");
@@ -164,7 +182,9 @@ int DataOpen(vlc_object_t* p_obj) {
     if (!s) return VLC_ENOMEM;
 
     try {
-        s->p_download = Download::get_download(md.get(), (size_t)mdsz, get_download_directory(p_obj), get_keep_files(p_obj));
+        s->p_download = Download::get_download(md.get(), (size_t)mdsz,
+                                               get_download_directory(p_obj),
+                                               get_keep_files(p_obj));
         s->i_file = s->p_download->get_file(p_extractor->identifier).first;
     } catch (const std::runtime_error& e) {
         msg_Err(p_extractor, "Failed to add download: %s", e.what());
