@@ -18,10 +18,12 @@
  * Реализация потока с использованием механизма кеширования VLC.
  * Гибридный подход: блокировка на старте, асинхронное чтение после.
  *
- * Поток извлечённого файла (stream_extractor) для VLC.
- * Стабильная версия: без внешних seek'ов к исходному потоку, без «нулевых»
- * чтений (кроме реального EOF), без самодельной логики паузы — VLC сам
- * перестаёт читать при CAN_CONTROL_PACE=false, а торрент продолжает качать.
+ * Ключевые моменты:
+ *  - НЕТ vlc_stream_Seek() по source в DataSeek().
+ *  - В DataRead() НИКОГДА не возвращаем 0, кроме реального EOF.
+ *  - Большой PTS delay для сетевой буферизации (>= 10s).
+ *  - Пауза: STREAM_CAN_CONTROL_PACE=false → VLC сам перестаёт читать;
+ *    торрент продолжает качать.
  */
 #ifdef HAVE_CONFIG_H
 # include "config.h"
@@ -59,7 +61,7 @@ static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_s
     if (!s->libvlc)
         s->libvlc = p_extractor->obj.libvlc;
 
-    /* Лёгкий телеметрический оверлей раз в ~0.5s */
+    /* Лёгкая телеметрия в оверлей раз в ~0.5s */
     mtime_t now = mdate();
     if (now - s->last_pub >= 500000) {
         BtOverlayStatus st{};
@@ -74,7 +76,7 @@ static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_s
     }
 
     try {
-        /* Блокирующе ждём нужный кусок (внутри Download::read) и читаем */
+        /* Блокирующе ждём нужный кусок и читаем */
         ssize_t ret = s->p_download->read(s->i_file, (int64_t)s->i_pos,
                                           static_cast<char*>(p_buf), i_size);
         if (ret > 0) {
@@ -84,12 +86,10 @@ static ssize_t DataRead(stream_extractor_t* p_extractor, void* p_buf, size_t i_s
                 msg_Dbg(p_extractor, "Initial buffer filled, playback starting.");
             }
         }
-        /* ВНИМАНИЕ: здесь ret == 0 возможен только на реальном EOF (см. выше).
-           Download::read больше не возвращает 0 «пока нет данных». */
+        /* ВАЖНО: ret==0 происходит только при реальном EOF (см. выше). */
         return ret;
     } catch (const std::runtime_error& e) {
-        /* На stop/seek VLC прерывает ожидание — корректно выходим ошибкой,
-           чтобы пайплайн перевызвался или завершился. */
+        /* На stop/seek VLC прерывает ожидание — корректно прерываем чтение. */
         msg_Dbg(p_extractor, "Read aborted: %s", e.what());
         return -1;
     }
@@ -99,13 +99,13 @@ static int DataSeek(stream_extractor_t* p_extractor, uint64_t i_pos) {
     auto* s = reinterpret_cast<data_sys*>(p_extractor->p_sys);
     msg_Dbg(p_extractor, "Seek requested to position %" PRIu64, i_pos);
 
-    /* Ключевая фикса: НЕ трогаем p_extractor->source и НЕ зовём vlc_stream_Seek() тут. */
+    /* НЕ трогаем p_extractor->source! */
     s->i_pos = i_pos;
     s->is_initial_buffer_filled = false;
 
     if (s->p_download)
-        s->p_download->set_piece_priority(s->i_file, (int64_t)s->i_pos, 50 * 1024 * 1024, 7);
-
+        s->p_download->set_piece_priority(s->i_file, (int64_t)s->i_pos,
+                                          50 * 1024 * 1024, 7);
     return VLC_SUCCESS;
 }
 
@@ -123,22 +123,24 @@ static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list arg
             break;
 
         case STREAM_GET_PTS_DELAY: {
-            /* Уважаем user/network-caching; по умолчанию 1000ms */
+            /* Делаем буферизацию «с запасом»: минимум 10s */
             int64_t caching_ms = var_InheritInteger(p_extractor, "network-caching");
-            if (caching_ms <= 0) caching_ms = 1000;
+            if (caching_ms <= 0) caching_ms = 10000;
+            if (caching_ms < 10000) caching_ms = 10000;
             *va_arg(args, int64_t*) = caching_ms * 1000LL;
+            msg_Dbg(p_extractor, "Using PTS delay = %" PRId64 " us", caching_ms * 1000LL);
             break;
         }
 
         case STREAM_CAN_PAUSE:
-            *va_arg(args, bool*) = true;  /* VLC умеет ставить на паузу сам */
+            *va_arg(args, bool*) = true;
             break;
 
         case STREAM_CAN_CONTROL_PACE:
-            *va_arg(args, bool*) = false; /* темпом не управляем → VLC перестаёт читать на паузе */
+            *va_arg(args, bool*) = false; /* VLC сам остановит чтение на паузе */
             break;
 
-        /* ВАЖНО: STREAM_SET_PAUSE_STATE не нужен при CAN_CONTROL_PACE=false */
+        /* STREAM_SET_PAUSE_STATE нам не нужен при CAN_CONTROL_PACE=false */
 
         default:
             return vlc_stream_vaControl(p_extractor->source, i_query, args);
@@ -147,7 +149,6 @@ static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list arg
 }
 
 int DataOpen(vlc_object_t* p_obj) {
-    /* Инициализация оверлей-переменной */
     libvlc_int_t *libvlc = p_obj->obj.libvlc;
     var_Create(VLC_OBJECT(libvlc), "bt_overlay_text", VLC_VAR_STRING);
     var_SetString(VLC_OBJECT(libvlc), "bt_overlay_text", "[BT] Starting...");
@@ -172,10 +173,10 @@ int DataOpen(vlc_object_t* p_obj) {
         return VLC_EGENERIC;
     }
 
-    p_extractor->p_sys = s;
-    p_extractor->pf_read    = DataRead;
-    p_extractor->pf_seek    = DataSeek;
-    p_extractor->pf_control = DataControl;
+    p_extractor->p_sys     = s;
+    p_extractor->pf_read   = DataRead;
+    p_extractor->pf_seek   = DataSeek;
+    p_extractor->pf_control= DataControl;
 
     msg_Dbg(p_obj, "BitTorrent data stream opened successfully.");
     return VLC_SUCCESS;
