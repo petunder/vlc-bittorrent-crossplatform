@@ -78,7 +78,7 @@ MagnetMetadataControl(stream_t* access, int query, va_list args)
         *va_arg(args, bool*) = false;
         break;
     case STREAM_CAN_CONTROL_PACE:
-        *va_arg(args, bool*) = true;
+        *va_arg(args, bool*) = false;
         break;
     case STREAM_GET_CONTENT_TYPE:
         *va_arg(args, char**) = strdup("application/x-bittorrent");
