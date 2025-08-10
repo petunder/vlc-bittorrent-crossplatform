@@ -123,15 +123,18 @@ static int DataControl(stream_extractor_t* p_extractor, int i_query, va_list arg
             break;
 
         case STREAM_GET_PTS_DELAY: {
-            /* Делаем буферизацию «с запасом»: минимум 10s */
+            // Делаем буферизацию «с запасом»: минимум 10s
             int64_t caching_ms = var_InheritInteger(p_extractor, "network-caching");
             if (caching_ms <= 0) caching_ms = 10000;
             if (caching_ms < 10000) caching_ms = 10000;
-            *va_arg(args, int64_t*) = caching_ms * 1000LL;
-            msg_Dbg(p_extractor, "Using PTS delay = %" PRId64 " us", caching_ms * 1000LL);
+
+            int64_t delay_us = caching_ms * 1000; // строго int64_t, без ...LL
+            *va_arg(args, int64_t*) = delay_us;
+
+            msg_Dbg(p_extractor, "Using PTS delay = %" PRId64 " us", delay_us);
             break;
         }
-
+        
         case STREAM_CAN_PAUSE:
             *va_arg(args, bool*) = true;
             break;
