@@ -84,11 +84,10 @@
 #define MB (1024 * kB)
 
 #define PRIO_HIGHEST 7
-#define PRIO_HIGHER 6
-#define PRIO_HIGH 5
+#define PRIO_HIGHER  6
+#define PRIO_HIGH    5
 
-// Тайм-аут в секундах для ожидания одного куска.
-// Если за это время ничего не скачалось, read() вернет ошибку.
+// Тайм-аут ожидания одного куска.
 #define PIECE_READ_TIMEOUT 60
 
 namespace lt = libtorrent;
@@ -99,12 +98,10 @@ public:
     {
         vlc_interrupt_register(abort, &pr);
     }
-
     ~vlc_interrupt_guard()
     {
         vlc_interrupt_unregister();
     }
-
 private:
     static void abort(void* data)
     {
@@ -118,17 +115,14 @@ private:
 template <typename T> class AlertSubscriber {
 public:
     AlertSubscriber(std::shared_ptr<Session> dl, T* pr)
-        : m_session(dl)
-        , m_promise(pr)
+        : m_session(dl), m_promise(pr)
     {
         m_session->register_alert_listener(m_promise);
     }
-
     ~AlertSubscriber()
     {
         m_session->unregister_alert_listener(m_promise);
     }
-
 private:
     std::shared_ptr<Session> m_session;
     T* m_promise;
@@ -138,31 +132,24 @@ using ReadValue = std::pair<boost::shared_array<char>, int>;
 
 class ReadPiecePromise : public std::promise<ReadValue>, public Alert_Listener {
 public:
-    ReadPiecePromise(lt::sha1_hash ih, int p)
-        : m_ih(ih)
-        , m_piece(p)
-    {
-    }
-
+    ReadPiecePromise(lt::sha1_hash ih, int p) : m_ih(ih), m_piece(p) {}
     void handle_alert(lt::alert* a) override
     {
         if (auto* x = lt::alert_cast<lt::read_piece_alert>(a)) {
-            #if LIBTORRENT_VERSION_NUM >= 20000
-                if (x->handle.info_hashes().v1 != m_ih) return;
-            #else
-                if (x->handle.info_hash() != m_ih) return;
-            #endif
+        #if LIBTORRENT_VERSION_NUM >= 20000
+            if (x->handle.info_hashes().v1 != m_ih) return;
+        #else
+            if (x->handle.info_hash() != m_ih) return;
+        #endif
             if (x->piece != m_piece) return;
 
             if (x->error) {
-                set_exception(
-                    std::make_exception_ptr(std::runtime_error("read failed")));
+                set_exception(std::make_exception_ptr(std::runtime_error("read failed")));
             } else {
                 set_value(std::make_pair(x->buffer, x->size));
             }
         }
     }
-
 private:
     lt::sha1_hash m_ih;
     int m_piece;
@@ -170,25 +157,19 @@ private:
 
 class DownloadPiecePromise : public std::promise<void>, public Alert_Listener {
 public:
-    DownloadPiecePromise(lt::sha1_hash ih, int p)
-        : m_ih(ih)
-        , m_piece(p)
-    {
-    }
-
+    DownloadPiecePromise(lt::sha1_hash ih, int p) : m_ih(ih), m_piece(p) {}
     void handle_alert(lt::alert* a) override
     {
         if (auto* x = lt::alert_cast<lt::piece_finished_alert>(a)) {
-            #if LIBTORRENT_VERSION_NUM >= 20000
-                if (x->handle.info_hashes().v1 != m_ih) return;
-            #else
-                if (x->handle.info_hash() != m_ih) return;
-            #endif
+        #if LIBTORRENT_VERSION_NUM >= 20000
+            if (x->handle.info_hashes().v1 != m_ih) return;
+        #else
+            if (x->handle.info_hash() != m_ih) return;
+        #endif
             if (x->piece_index != m_piece) return;
             set_value();
         }
     }
-
 private:
     lt::sha1_hash m_ih;
     int m_piece;
@@ -196,70 +177,56 @@ private:
 
 class MetadataDownloadPromise : public std::promise<void>, public Alert_Listener {
 public:
-    MetadataDownloadPromise(lt::sha1_hash ih)
-        : m_ih(ih)
-    {
-    }
-
+    explicit MetadataDownloadPromise(lt::sha1_hash ih) : m_ih(ih) {}
     void handle_alert(lt::alert* a) override
     {
         if (auto* x = lt::alert_cast<lt::torrent_error_alert>(a)) {
-            #if LIBTORRENT_VERSION_NUM >= 20000
-                if (x->handle.info_hashes().v1 != m_ih) return;
-            #else
-                if (x->handle.info_hash() != m_ih) return;
-            #endif
-            set_exception(
-                std::make_exception_ptr(std::runtime_error("metadata failed")));
+        #if LIBTORRENT_VERSION_NUM >= 20000
+            if (x->handle.info_hashes().v1 != m_ih) return;
+        #else
+            if (x->handle.info_hash() != m_ih) return;
+        #endif
+            set_exception(std::make_exception_ptr(std::runtime_error("metadata failed")));
         } else if (auto* x = lt::alert_cast<lt::metadata_failed_alert>(a)) {
-            #if LIBTORRENT_VERSION_NUM >= 20000
-                if (x->handle.info_hashes().v1 != m_ih) return;
-            #else
-                if (x->handle.info_hash() != m_ih) return;
-            #endif
-            set_exception(
-                std::make_exception_ptr(std::runtime_error("metadata failed")));
+        #if LIBTORRENT_VERSION_NUM >= 20000
+            if (x->handle.info_hashes().v1 != m_ih) return;
+        #else
+            if (x->handle.info_hash() != m_ih) return;
+        #endif
+            set_exception(std::make_exception_ptr(std::runtime_error("metadata failed")));
         } else if (auto* x = lt::alert_cast<lt::metadata_received_alert>(a)) {
-            #if LIBTORRENT_VERSION_NUM >= 20000
-                if (x->handle.info_hashes().v1 != m_ih) return;
-            #else
-                if (x->handle.info_hash() != m_ih) return;
-            #endif
+        #if LIBTORRENT_VERSION_NUM >= 20000
+            if (x->handle.info_hashes().v1 != m_ih) return;
+        #else
+            if (x->handle.info_hash() != m_ih) return;
+        #endif
             set_value();
         }
     }
-
 private:
     lt::sha1_hash m_ih;
 };
 
 class RemovePromise : public std::promise<void>, public Alert_Listener {
 public:
-    RemovePromise(lt::sha1_hash ih)
-        : m_ih(ih)
-    {
-    }
-
+    explicit RemovePromise(lt::sha1_hash ih) : m_ih(ih) {}
     void handle_alert(lt::alert* a) override
     {
         if (auto* x = lt::alert_cast<lt::torrent_removed_alert>(a)) {
-            #if LIBTORRENT_VERSION_NUM >= 20000
-                if (x->info_hashes.v1 != m_ih) return;
-            #else
-                if (x->info_hash != m_ih) return;
-            #endif
+        #if LIBTORRENT_VERSION_NUM >= 20000
+            if (x->info_hashes.v1 != m_ih) return;
+        #else
+            if (x->info_hash != m_ih) return;
+        #endif
             set_value();
         }
     }
-
 private:
     lt::sha1_hash m_ih;
 };
 
 Download::Download(std::mutex& mtx, lt::add_torrent_params& atp, bool k)
-    : m_lock(mtx)
-    , m_keep(k)
-    , m_session(Session::get())
+    : m_lock(mtx), m_keep(k), m_session(Session::get())
 {
     D(printf("%s:%d: %s (from atp)\n", __FILE__, __LINE__, __func__));
 
@@ -269,9 +236,7 @@ Download::Download(std::mutex& mtx, lt::add_torrent_params& atp, bool k)
 
     if (m_th.is_valid() && !atp.trackers.empty()) {
         std::vector<lt::announce_entry> announce_entries;
-        for (const auto& url : atp.trackers) {
-            announce_entries.emplace_back(url);
-        }
+        for (const auto& url : atp.trackers) announce_entries.emplace_back(url);
         m_th.replace_trackers(announce_entries);
     }
 
@@ -292,7 +257,7 @@ Download::~Download()
 }
 
 ssize_t Download::read(int file, int64_t fileoff, char* buf, size_t buflen,
-    DataProgressCb progress_cb)
+                       DataProgressCb progress_cb)
 {
     D(printf("%s:%d: %s(%d, %lu, %p, %lu)\n", __FILE__, __LINE__, __func__,
         file, fileoff, buf, buflen));
@@ -313,53 +278,45 @@ ssize_t Download::read(int file, int64_t fileoff, char* buf, size_t buflen,
                         (int64_t)buflen, filesz - fileoff }));
     if (part.length <= 0) return 0;
 
-    // ШАГ 1: Устанавливаем приоритеты, чтобы libtorrent начал качать нужные данные.
+    // Приоритеты для плавного старта/перемотки
     set_piece_priority(file, fileoff, part.length, PRIO_HIGHEST);
-
-    int64_t p01 = std::max(
-        std::min((int64_t)std::numeric_limits<int>::max(), filesz / 1000),
-        (int64_t)128 * kB);
+    int64_t p01 = std::max(std::min((int64_t)std::numeric_limits<int>::max(), filesz / 1000),
+                           (int64_t)128 * kB);
     set_piece_priority(file, 0, (int)p01, PRIO_HIGHER);
     set_piece_priority(file, filesz - p01, (int)p01, PRIO_HIGHER);
-
-    int64_t p5 = std::max(
-        std::min((int64_t)std::numeric_limits<int>::max(), 5 * filesz / 100),
-        (int64_t)32 * MB);
+    int64_t p5 = std::max(std::min((int64_t)std::numeric_limits<int>::max(), 5 * filesz / 100),
+                          (int64_t)32 * MB);
     set_piece_priority(file, fileoff, (int)p5, PRIO_HIGH);
 
-    // ШАГ 2: Проверяем, есть ли уже нужная нам часть.
+    // Если нужной части нет — ждём её загрузки (с прерыванием из VLC)
     if (!m_th.have_piece(part.piece)) {
-        // Если части нет, мы БЛОКИРУЕМСЯ и ждем ее скачивания.
         DownloadPiecePromise dlprom(m_th.info_hash(), part.piece);
         AlertSubscriber<DownloadPiecePromise> sub(m_session, &dlprom);
+        // ВАЖНО: это позволит мгновенно прервать ожидание при Pause/Stop
+        vlc_interrupt_guard<DownloadPiecePromise> intrguard(dlprom);
         auto f = dlprom.get_future();
 
         if (progress_cb) progress_cb(0.0);
 
-        // Ждем не дольше, чем указано в тайм-ауте.
         auto status = f.wait_for(std::chrono::seconds(PIECE_READ_TIMEOUT));
         if (status == std::future_status::timeout) {
-            // Если время вышло, бросаем исключение, которое поймает data.cpp.
             throw std::runtime_error("Timeout waiting for piece to download");
         }
-
-        // Если скачалось, проверяем на другие ошибки.
+        // может бросить "vlc interrupted" — это отработает вызывающий код
         f.get();
         if (progress_cb) progress_cb(100.0);
     }
-    
-    // Если данных по-прежнему нет (например, из-за ошибки в libtorrent),
-    // возвращаем 0, чтобы не зацикливаться.
+
     if (!m_th.have_piece(part.piece)) {
         return 0;
     }
 
-    // ШАГ 3: Если мы дошли сюда, значит часть скачана. Выполняем чтение с диска.
+    // Чтение из куска
     return read(part, buf, buflen);
 }
 
 void Download::set_piece_priority(int file, int64_t off, int size,
-    libtorrent::download_priority_t prio)
+                                  libtorrent::download_priority_t prio)
 {
     D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
@@ -485,24 +442,23 @@ std::shared_ptr<std::vector<char>> Download::get_metadata(
     return metadata;
 }
 
-std::shared_ptr<Download> Download::get_download(
-    lt::add_torrent_params& atp, bool k)
+std::shared_ptr<Download> Download::get_download(lt::add_torrent_params& atp, bool k)
 {
     D(printf("%s:%d: %s (from atp)\n", __FILE__, __LINE__, __func__));
     
     lt::sha1_hash ih;
     if (atp.ti) {
-        #if LIBTORRENT_VERSION_NUM >= 20000
-            ih = atp.ti->info_hashes().v1;
-        #else
-            ih = atp.ti->info_hash();
-        #endif
+    #if LIBTORRENT_VERSION_NUM >= 20000
+        ih = atp.ti->info_hashes().v1;
+    #else
+        ih = atp.ti->info_hash();
+    #endif
     } else {
-        #if LIBTORRENT_VERSION_NUM >= 20000
-            ih = atp.info_hashes.v1;
-        #else
-            ih = atp.info_hash;
-        #endif
+    #if LIBTORRENT_VERSION_NUM >= 20000
+        ih = atp.info_hashes.v1;
+    #else
+        ih = atp.info_hash;
+    #endif
     }
 
     static std::mutex mtx;
@@ -516,8 +472,7 @@ std::shared_ptr<Download> Download::get_download(
     return dl;
 }
 
-std::shared_ptr<Download> Download::get_download(
-    char* md, size_t mdsz, std::string sp, bool k)
+std::shared_ptr<Download> Download::get_download(char* md, size_t mdsz, std::string sp, bool k)
 {
     D(printf("%s:%d: %s (from buf)\n", __FILE__, __LINE__, __func__));
 
@@ -562,12 +517,11 @@ std::string Download::get_infohash()
 {
     D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata();
-    
-    #if LIBTORRENT_VERSION_NUM >= 20000
-        return lt::aux::to_hex(m_th.info_hashes().v1.to_string());
-    #else
-        return lt::aux::to_hex(m_th.info_hash().to_string());
-    #endif
+#if LIBTORRENT_VERSION_NUM >= 20000
+    return lt::aux::to_hex(m_th.info_hashes().v1.to_string());
+#else
+    return lt::aux::to_hex(m_th.info_hash().to_string());
+#endif
 }
 
 lt::torrent_handle Download::get_handle()
@@ -596,8 +550,7 @@ bool Download::query_status(BtOverlayStatus &out)
     return true;
 }
 
-std::shared_ptr<std::vector<char>> Download::get_metadata(
-    MetadataProgressCb cb)
+std::shared_ptr<std::vector<char>> Download::get_metadata(MetadataProgressCb cb)
 {
     D(printf("%s:%d: %s()\n", __FILE__, __LINE__, __func__));
     download_metadata(cb);
